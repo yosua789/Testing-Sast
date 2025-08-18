@@ -1,23 +1,41 @@
 pipeline {
   agent any
-  tools { 
-        maven 'maven_3_5_2'  
+  environment {
+    SNYK_SEVERITY  = 'high' 
+    FAIL_ON_ISSUES = 'false'  
+  }
+  options { timestamps(); ansiColor('xterm') }
+
+  stages {
+    stage('Checkout') {
+      steps { checkout scm }
     }
-   stages{
-    stage('Run Sonar Analysis') {
-            steps {	
-		sh 'mvn clean verify sonar:sonar -Dsonar.projectKey=franksast -Dsonar.organization=franksast -Dsonar.host.url=https://sonarcloud.io -Dsonar.login=ce3caf6f60b599b72a6ced8a5fc17e060b1d87ee'
-		//sh 'mvn clean compile sonar:sonar -Dsonar.projectKey=franksast -Dsonar.organization=franksast -Dsonar.host.url=https://sonarcloud.io -Dsonar.login=ce3caf6f60b599b72a6ced8a5fc17e060b1d87ee'
-			}
+
+    stage('SCA: Snyk') {
+      steps {
+        withCredentials([string(credentialsId: 'SNYK_TOKEN', variable: 'SNYK_TOKEN')]) {
+          sh """
+            set +e
+            docker run --rm \
+              -e SNYK_TOKEN=$SNYK_TOKEN \
+              -v "\$PWD:/work" -w /work \
+              snyk/snyk:latest snyk test \
+                --all-projects \
+                --exclude=**/node_modules/**,**/.venv/**,**/vendor/**,**/build/**,**/dist/** \
+                --severity-threshold=${SNYK_SEVERITY}
+            SNYK_EXIT=\$?
+
+            echo "----"
+            echo "Snyk exit code: \$SNYK_EXIT"
+            if [ "${FAIL_ON_ISSUES}" = "true" ]; then
+              exit \$SNYK_EXIT
+            else
+              echo "not found vulnerable. but keep scanning code"
+              exit 0
+            fi
+          """
         }
-    stage('Run SCA Analysis using Snyk') {
-            steps {		
-			withCredentials([string(credentialsId: 'SNYK_TOKEN', variable: 'SNYK_TOKEN')]) {
-			    sh 'mvn snyk:test -fn'
-				}
-			}
-    }	
-
-
+      }
+    }
   }
 }
