@@ -10,6 +10,7 @@ pipeline {
 
   stages {
     stage('Checkout') { steps { checkout scm } }
+
     stage('SCA: Snyk (console only)') {
       steps {
         withCredentials([string(credentialsId: 'SNYK_TOKEN', variable: 'SNYK_TOKEN')]) {
@@ -25,6 +26,20 @@ pipeline {
             SNYK_EXIT=\$?
             echo "Snyk exit code: \$SNYK_EXIT"
             if [ "\${FAIL_ON_ISSUES}" = "true" ]; then exit \$SNYK_EXIT; else exit 0; fi
+          """
+        }
+      }
+    }
+
+    stage('SCA: SonarQube') {
+      steps {
+        withCredentials([string(credentialsId: 'sonarqube-token', variable: 'sonarqube-token')]) {
+          sh """
+            docker run --rm \
+              -e SONAR_HOST_URL=http://localhost:9010 \
+              -e SONAR_LOGIN=$ \
+              -v "\$PWD:/usr/src" \
+              sonarsource/sonar-scanner-cli
           """
         }
       }
