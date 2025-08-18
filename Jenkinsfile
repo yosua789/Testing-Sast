@@ -1,44 +1,27 @@
 pipeline {
-    agent any
+  agent any
 
-    tools {
-        sonarScanner 'SonarScanner_4_8'
+  stages {
+    stage('SCA Scan') {
+      steps {
+        sh '''
+          dependency-check.sh \
+            --project MyApp \
+            --scan . \
+            --format HTML \
+            --out dependency-check-report
+        '''
+      }
     }
-
-    environment {
-        SONAR_HOST_URL   = 'http://localhost:9000'
-        SONAR_PROJECT_KEY = 'demo-SAST'
+    stage('Publish Report') {
+      steps {
+        publishHTML([allowMissing: false,
+          alwaysLinkToLastBuild: true,
+          keepAll: true,
+          reportDir: 'dependency-check-report',
+          reportFiles: 'dependency-check-report.html',
+          reportName: 'Dependency Check Report'])
+      }
     }
-
-    stages {
-        stage('Checkout Code') {
-            steps {
-                checkout scm
-            }
-        }
-
-        stage('SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv('MySonarQube') {
-                    withCredentials([string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_LOGIN')]) {
-                        sh """
-                            sonar-scanner \
-                              -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-                              -Dsonar.sources=. \
-                              -Dsonar.host.url=${SONAR_HOST_URL} \
-                              -Dsonar.login=${SONAR_LOGIN}
-                        """
-                    }
-                }
-            }
-        }
-
-        stage('Quality Gate') {
-            steps {
-                timeout(time: 2, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
-                }
-            }
-        }
-    }
+  }
 }
