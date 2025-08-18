@@ -37,7 +37,7 @@ pipeline {
           sh """
             docker run --rm \
               -e SONAR_HOST_URL=http://localhost:9010 \
-              -e SONAR_LOGIN=$ \
+              -e SONAR_LOGIN=$ sonarqube-token \
               -v "\$PWD:/usr/src" \
               sonarsource/sonar-scanner-cli
           """
