@@ -1,17 +1,16 @@
 pipeline {
   agent any
+
   environment {
-    SNYK_SEVERITY  = 'high' 
-    FAIL_ON_ISSUES = 'false'  
+    SNYK_SEVERITY  = 'high'
+    FAIL_ON_ISSUES = 'false'
   }
-  options { timestamps(); ansiColor('xterm') }
+
+  options { timestamps() } // <-- hapus ansiColor di sini
 
   stages {
-    stage('Checkout') {
-      steps { checkout scm }
-    }
-
-    stage('SCA: Snyk') {
+    stage('Checkout') { steps { checkout scm } }
+    stage('SCA: Snyk (console only)') {
       steps {
         withCredentials([string(credentialsId: 'SNYK_TOKEN', variable: 'SNYK_TOKEN')]) {
           sh """
@@ -24,15 +23,8 @@ pipeline {
                 --exclude=**/node_modules/**,**/.venv/**,**/vendor/**,**/build/**,**/dist/** \
                 --severity-threshold=${SNYK_SEVERITY}
             SNYK_EXIT=\$?
-
-            echo "----"
             echo "Snyk exit code: \$SNYK_EXIT"
-            if [ "${FAIL_ON_ISSUES}" = "true" ]; then
-              exit \$SNYK_EXIT
-            else
-              echo "not found vulnerable. but keep scanning code"
-              exit 0
-            fi
+            if [ "\${FAIL_ON_ISSUES}" = "true" ]; then exit \$SNYK_EXIT; else exit 0; fi
           """
         }
       }
