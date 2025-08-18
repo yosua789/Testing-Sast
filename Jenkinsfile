@@ -33,11 +33,11 @@ pipeline {
 
     stage('SCA: SonarQube') {
       steps {
-        withCredentials([string(credentialsId: 'sonarqube-token', variable: 'sonarqube-token')]) {
+        withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
           sh """
             docker run --rm \
               -e SONAR_HOST_URL=http://localhost:9010 \
-              -e SONAR_LOGIN=$ sonarqube-token \
+              -e SONAR_LOGIN=$SONAR_TOKEN \
               -v "\$PWD:/usr/src" \
               sonarsource/sonar-scanner-cli
           """
