@@ -6,7 +6,7 @@ pipeline {
     FAIL_ON_ISSUES = 'false'
   }
 
-  options { timestamps() } // <-- hapus ansiColor di sini
+  options { timestamps() }
 
   stages {
     stage('Checkout') { steps { checkout scm } }
