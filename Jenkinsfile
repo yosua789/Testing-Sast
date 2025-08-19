@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_HOST = "tcp://docker:2375"
+        DOCKER_HOST = "tcp://dind:2375"
     }
 
     stages {
@@ -13,11 +13,11 @@ pipeline {
             }
         }
 
-        stage('Build') {
+        stage('Build with Maven') {
             agent {
-                docker { 
+                docker {
                     image 'maven:3.8.8-openjdk-11'
-                    args '-e DOCKER_HOST=tcp://docker:2375'
+                    args '-e DOCKER_HOST=tcp://dind:2375'
                 }
             }
             steps {
@@ -29,16 +29,16 @@ pipeline {
             agent {
                 docker {
                     image 'owasp/dependency-check:latest'
-                    args '-e DOCKER_HOST=tcp://docker:2375'
+                    args '-e DOCKER_HOST=tcp://dind:2375'
                 }
             }
             steps {
                 sh '''
-                  dependency-check.sh \
-                    --project Testing-Sast \
-                    --scan ./src/main \
-                    --format HTML \
-                    --out dependency-check-report
+                    dependency-check.sh \
+                      --project Testing-Sast \
+                      --scan ./src/main \
+                      --format HTML \
+                      --out dependency-check-report
                 '''
             }
             post {
