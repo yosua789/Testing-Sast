@@ -6,15 +6,14 @@ pipeline {
     }
 
     stages {
+        // Checkout di node host, bukan container
         stage('Checkout') {
-            // Checkout di node Jenkins utama, bukan di container
             steps {
-                checkout([$class: 'GitSCM', 
-                          branches: [[name: 'main']], 
-                          userRemoteConfigs: [[url: 'https://github.com/yosua789/Testing-Sast.git']]])
+                checkout scm
             }
         }
 
+        // Build Maven pakai Docker container
         stage('Build with Maven') {
             agent {
                 docker {
@@ -27,7 +26,8 @@ pipeline {
             }
         }
 
-        stage('Dependency Check') {
+        // Dependency check dengan container
+        stage('SCA - Dependency Check') {
             agent {
                 docker {
                     image 'owasp/dependency-check:latest'
@@ -54,13 +54,15 @@ pipeline {
             }
         }
 
+        // Build Docker image
         stage('Build Docker Image') {
             steps {
                 sh 'docker build -t testing-sast:latest .'
             }
         }
 
-        stage('Trivy Scan') {
+        // Trivy scan
+        stage('SCA - Trivy Docker Scan') {
             steps {
                 sh 'trivy image --exit-code 0 --severity HIGH,CRITICAL testing-sast:latest > trivy-report.txt'
             }
