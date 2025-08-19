@@ -6,7 +6,7 @@ pipeline {
     }
 
     options {
-        skipDefaultCheckout(true) // supaya kita kontrol checkout sendiri
+        skipDefaultCheckout(true)
     }
 
     stages {
@@ -16,13 +16,15 @@ pipeline {
             }
         }
 
-        stage('Checkout Git') {
+        stage('Checkout') {
             steps {
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: 'main']],
-                    userRemoteConfigs: [[url: 'https://github.com/yosua789/Testing-Sast.git']]
-                ])
+                script {
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: 'main']],
+                        userRemoteConfigs: [[url: 'https://github.com/yosua789/Testing-Sast.git']]
+                    ])
+                }
             }
         }
 
