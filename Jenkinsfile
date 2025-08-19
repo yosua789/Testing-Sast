@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_HOST = "tcp://dind:2375"
+        DOCKER_HOST = "unix:///var/run/docker.sock"
     }
 
     stages {
@@ -17,7 +17,7 @@ pipeline {
             agent {
                 docker {
                     image 'maven:3.8.8-openjdk-11'
-                    args '-e DOCKER_HOST=tcp://dind:2375'
+                    args '-v /var/run/docker.sock:/var/run/docker.sock'
                 }
             }
             steps {
@@ -29,7 +29,7 @@ pipeline {
             agent {
                 docker {
                     image 'owasp/dependency-check:latest'
-                    args '-e DOCKER_HOST=tcp://dind:2375'
+                    args '-v /var/run/docker.sock:/var/run/docker.sock'
                 }
             }
             steps {
