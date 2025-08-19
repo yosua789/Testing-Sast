@@ -12,15 +12,13 @@ pipeline {
             }
         }
 
-        stage('Checkout') {
+        stage('Checkout Repository') {
             steps {
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: '*/main']],
-                    doGenerateSubmoduleConfigurations: false,
-                    extensions: [[$class: 'CloneOption', noTags: false, shallow: false]],
-                    userRemoteConfigs: [[url: 'https://github.com/yosua789/Testing-Sast.git']]
-                ])
+                checkout([$class: 'GitSCM',
+                          branches: [[name: '*/main']],
+                          doGenerateSubmoduleConfigurations: false,
+                          extensions: [[$class: 'CloneOption', shallow: false, noTags: false]],
+                          userRemoteConfigs: [[url: 'https://github.com/yosua789/Testing-Sast.git']]])
             }
         }
 
@@ -46,10 +44,10 @@ pipeline {
             steps {
                 sh '''
                     dependency-check.sh \
-                        --project Testing-Sast \
-                        --scan ./src/main \
-                        --format HTML \
-                        --out dependency-check-report
+                      --project Testing-Sast \
+                      --scan ./src/main \
+                      --format HTML \
+                      --out dependency-check-report
                 '''
             }
             post {
@@ -83,7 +81,7 @@ pipeline {
 
     post {
         always {
-            echo "Pipeline done"
+            echo "Pipeline selesai bro, semuanya aman."
         }
     }
 }
