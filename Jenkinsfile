@@ -10,21 +10,14 @@ pipeline {
     }
 
     stages {
-        stage('Clean Workspace') {
-            steps {
-                deleteDir()
-            }
-        }
-
         stage('Checkout') {
             steps {
-                script {
-                    checkout([
-                        $class: 'GitSCM',
-                        branches: [[name: 'main']],
-                        userRemoteConfigs: [[url: 'https://github.com/yosua789/Testing-Sast.git']]
-                    ])
-                }
+                // Checkout Git di node utama
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: 'main']],
+                    userRemoteConfigs: [[url: 'https://github.com/yosua789/Testing-Sast.git']]
+                ])
             }
         }
 
