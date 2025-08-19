@@ -1,10 +1,5 @@
 pipeline {
-    agent {
-        docker {
-            image 'maven:3.8.8-openjdk-11'
-            args '-v /var/run/docker.sock:/var/run/docker.sock'
-        }
-    }
+    agent any
 
     stages {
         stage('Checkout') {
@@ -15,12 +10,18 @@ pipeline {
         }
 
         stage('Build') {
+            agent {
+                docker { image 'maven:3.8.8-openjdk-11' }
+            }
             steps {
                 sh 'mvn clean package -DskipTests'
             }
         }
 
         stage('SCA - Dependency Check') {
+            agent {
+                docker { image 'owasp/dependency-check:latest' }
+            }
             steps {
                 sh '''
                   dependency-check.sh \
@@ -33,9 +34,6 @@ pipeline {
             post {
                 always {
                     publishHTML(target: [
-                        allowMissing: false,
-                        alwaysLinkToLastBuild: true,
-                        keepAll: true,
                         reportDir: 'dependency-check-report',
                         reportFiles: 'dependency-check-report.html',
                         reportName: 'Dependency-Check Report'
@@ -52,9 +50,7 @@ pipeline {
 
         stage('SCA - Trivy Docker Scan') {
             steps {
-                sh '''
-                  trivy image --exit-code 0 --severity HIGH,CRITICAL testing-sast:latest > trivy-report.txt
-                '''
+                sh 'trivy image --exit-code 0 --severity HIGH,CRITICAL testing-sast:latest > trivy-report.txt'
             }
             post {
                 always {
@@ -66,7 +62,7 @@ pipeline {
 
     post {
         always {
-            echo "Pipeline selesai - hasil scan tersedia di artifacts."
+            echo "Pipeline done"
         }
     }
 }
