@@ -2,34 +2,14 @@ pipeline {
   agent any
   options { skipDefaultCheckout(true) }
 
-  environment {
-    DOCKER_HOST = "unix:///var/run/docker.sock"
-  }
-
   stages {
-    stage('Clean Workspace') {
-      steps { cleanWs() }
-    }
-
-    stage('Checkout Repository') {
+    stage('Checkout') {
       steps {
         checkout([$class: 'GitSCM',
           branches: [[name: '*/main']],
           extensions: [[$class: 'CloneOption', shallow: false, noTags: false]],
           userRemoteConfigs: [[url: 'https://github.com/yosua789/Testing-Sast.git']]
         ])
-      }
-    }
-
-    stage('Build with Maven') {
-      agent {
-        docker {
-          image 'maven:3.9.9-eclipse-temurin-11'
-          reuseNode true
-        }
-      }
-      steps {
-        sh 'mvn -B clean package -DskipTests'
       }
     }
 
@@ -45,7 +25,7 @@ pipeline {
         sh '''
           /usr/share/dependency-check/bin/dependency-check.sh \
             --project "Testing-Sast" \
-            --scan ./src/main \
+            --scan ./src \
             --format HTML \
             --out dependency-check-report
         '''
@@ -63,7 +43,6 @@ pipeline {
 
     stage('Build Docker Image') {
       steps {
-        sh 'docker version'
         sh 'docker build -t testing-sast:latest .'
       }
     }
@@ -80,14 +59,8 @@ pipeline {
         sh 'trivy image --no-progress --exit-code 0 --severity HIGH,CRITICAL testing-sast:latest | tee trivy-report.txt'
       }
       post {
-        always {
-          archiveArtifacts artifacts: 'trivy-report.txt', fingerprint: true
-        }
+        always { archiveArtifacts artifacts: 'trivy-report.txt', fingerprint: true }
       }
     }
-  }
-
-  post {
-    always { echo 'Pipeline selesai bro, semuanya aman.' }
   }
 }
