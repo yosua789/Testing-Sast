@@ -4,7 +4,7 @@ pipeline {
 
   environment {
     DOCKER_HOST    = "unix:///var/run/docker.sock"
-    FAIL_ON_ISSUES = 'false'   // set 'true' kalau mau fail build saat ada vuln
+    FAIL_ON_ISSUES = 'false'   // set 'true' untuk menegakkan kegagalan saat ada vuln
   }
 
   stages {
@@ -25,13 +25,13 @@ pipeline {
     stage('Build with Maven') {
       agent {
         docker {
-          image 'maven:3.9.9-eclipse-temurin-11'
+          image 'maven:3.9.9-eclipse-temurin-11'   // Java 11; ganti ke -17 bila perlu
           reuseNode true
         }
       }
       steps {
         script {
-          // Aman meski tidak ada pom.xml
+          // Aman walau tidak ada pom.xml (hanya log & lanjut)
           def ec = sh(returnStatus: true, script: 'mvn -B clean package -DskipTests')
           if (ec != 0) {
             echo "Maven build skipped/failed (exit ${ec}). Lanjut ke SCA."
@@ -45,26 +45,36 @@ pipeline {
         docker {
           image 'owasp/dependency-check:latest'
           reuseNode true
-          args "-v ${WORKSPACE}/.odc:/usr/share/dependency-check/data"
+          // cache NVD + temp agar cepat dan stabil
+          args "-v ${WORKSPACE}/.odc:/usr/share/dependency-check/data -v ${WORKSPACE}/.odc-temp:/tmp"
         }
       }
       steps {
         catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
           script {
-            sh 'mkdir -p dependency-check-report || true'
-            def cmd = '''
+            sh '''
+              set -e
+              mkdir -p dependency-check-report
+
+              # (Opsional) Update DB dulu; jika gagal, jangan hentikan pipeline
+              /usr/share/dependency-check/bin/dependency-check.sh --updateonly || true
+
+              # Scan; --failOnCVSS 11 = jangan fail karena temuan (hanya crash yang membuat non-zero)
               set +e
               /usr/share/dependency-check/bin/dependency-check.sh \
                 --project "Testing-Sast" \
                 --scan ./src \
-                --format HTML \
-                --out dependency-check-report
+                --format ALL \
+                --out dependency-check-report \
+                --log dependency-check-report/dependency-check.log \
+                --failOnCVSS 11
+              echo $? > .dc_exit
             '''
-            def ec = sh(returnStatus: true, script: cmd)
-            echo "Dependency-Check exit code: ${ec}"
+            def rc = readFile('.dc_exit').trim()
+            echo "Dependency-Check exit code: ${rc}"
 
-            if (env.FAIL_ON_ISSUES == 'true' && ec != 0) {
-              error "Fail build (policy) karena Dependency-Check exit ${ec}"
+            if (env.FAIL_ON_ISSUES == 'true' && rc != '0') {
+              error "Fail build (policy) karena Dependency-Check exit ${rc}"
             }
           }
         }
@@ -72,15 +82,19 @@ pipeline {
       post {
         always {
           script {
-            def reportPath = 'dependency-check-report/dependency-check-report.html'
-            if (fileExists(reportPath)) {
+            // Arsip log untuk debugging
+            if (fileExists('dependency-check-report/dependency-check.log')) {
+              archiveArtifacts artifacts: 'dependency-check-report/dependency-check.log', fingerprint: true
+            }
+            // Publish HTML hanya jika ada
+            if (fileExists('dependency-check-report/dependency-check-report.html')) {
               publishHTML(target: [
                 reportDir: 'dependency-check-report',
                 reportFiles: 'dependency-check-report.html',
                 reportName: 'Dependency-Check Report'
               ])
             } else {
-              echo "Dependency-Check report tidak ditemukan, skip publishHTML."
+              echo "Dependency-Check report tidak ditemukan. Cek dependency-check-report/dependency-check.log"
             }
           }
         }
@@ -90,14 +104,13 @@ pipeline {
     stage('Build Docker Image') {
       steps {
         script {
-          // Kalau Docker belum siap, jangan jatuhkan build
           def ec1 = sh(returnStatus: true, script: 'docker version')
           if (ec1 != 0) {
             echo "Docker tidak siap (exit ${ec1}). Skip build image & lanjut."
           } else {
             def ec2 = sh(returnStatus: true, script: 'docker build -t testing-sast:latest .')
             if (ec2 != 0) {
-              echo "Docker build gagal (exit ${ec2}). Lanjut ke Trivy stage (bisa skip otomatis)."
+              echo "Docker build gagal (exit ${ec2}). Trivy mungkin tidak menemukan image."
             }
           }
         }
@@ -109,14 +122,16 @@ pipeline {
         docker {
           image 'aquasec/trivy:latest'
           reuseNode true
-          args '-v /var/run/docker.sock:/var/run/docker.sock'
+          // pakai shell sebagai entrypoint + akses docker.sock + cache
+          args '--entrypoint=/bin/sh -v /var/run/docker.sock:/var/run/docker.sock -v ${WORKSPACE}/.trivy-cache:/root/.cache/trivy'
         }
       }
       steps {
         catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
           script {
-            // Scan image; tetap 0 agar uji coba lanjut
             def ec = sh(returnStatus: true, script: '''
+              set -e
+              trivy --version || true
               set +e
               trivy image --no-progress --exit-code 0 \
                 --severity HIGH,CRITICAL testing-sast:latest | tee trivy-report.txt
@@ -131,7 +146,7 @@ pipeline {
             if (fileExists('trivy-report.txt')) {
               archiveArtifacts artifacts: 'trivy-report.txt', fingerprint: true
             } else {
-              echo "trivy-report.txt tidak ditemukan, skip archive."
+              echo "trivy-report.txt tidak ditemukan, kemungkinan Trivy belum berjalan benar."
             }
           }
         }
