@@ -5,19 +5,13 @@ pipeline {
         DOCKER_HOST = "unix:///var/run/docker.sock"
     }
 
-    options {
-        skipDefaultCheckout(true)
-    }
-
     stages {
         stage('Checkout') {
+            // Checkout di node Jenkins utama, bukan di container
             steps {
-                // Checkout Git di node utama
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: 'main']],
-                    userRemoteConfigs: [[url: 'https://github.com/yosua789/Testing-Sast.git']]
-                ])
+                checkout([$class: 'GitSCM', 
+                          branches: [[name: 'main']], 
+                          userRemoteConfigs: [[url: 'https://github.com/yosua789/Testing-Sast.git']]])
             }
         }
 
@@ -33,7 +27,7 @@ pipeline {
             }
         }
 
-        stage('SCA - Dependency Check') {
+        stage('Dependency Check') {
             agent {
                 docker {
                     image 'owasp/dependency-check:latest'
@@ -66,7 +60,7 @@ pipeline {
             }
         }
 
-        stage('SCA - Trivy Docker Scan') {
+        stage('Trivy Scan') {
             steps {
                 sh 'trivy image --exit-code 0 --severity HIGH,CRITICAL testing-sast:latest > trivy-report.txt'
             }
