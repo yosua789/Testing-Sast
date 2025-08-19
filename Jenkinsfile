@@ -6,9 +6,7 @@ pipeline {
     }
 
     options {
-        skipDefaultCheckout true
-        buildDiscarder(logRotator(numToKeepStr: '10'))
-        timestamps()
+        skipDefaultCheckout(true) // supaya kita kontrol checkout sendiri
     }
 
     stages {
@@ -18,7 +16,7 @@ pipeline {
             }
         }
 
-        stage('Checkout') {
+        stage('Checkout Git') {
             steps {
                 checkout([
                     $class: 'GitSCM',
@@ -32,7 +30,7 @@ pipeline {
             agent {
                 docker {
                     image 'maven:3.8.8-openjdk-11'
-                    args '-v /var/run/docker.sock:/var/run/docker.sock'
+                    args '-v /var/run/docker.sock:/var/run/docker.sock -v $WORKSPACE:$WORKSPACE -w $WORKSPACE'
                 }
             }
             steps {
@@ -44,7 +42,7 @@ pipeline {
             agent {
                 docker {
                     image 'owasp/dependency-check:latest'
-                    args '-v /var/run/docker.sock:/var/run/docker.sock'
+                    args '-v /var/run/docker.sock:/var/run/docker.sock -v $WORKSPACE:$WORKSPACE -w $WORKSPACE'
                 }
             }
             steps {
