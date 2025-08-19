@@ -3,8 +3,7 @@ pipeline {
   options { skipDefaultCheckout(true) }
 
   environment {
-    DOCKER_HOST    = "unix:///var/run/docker.sock"
-    FAIL_ON_ISSUES = 'false'   // set 'true' utk fail build saat ada vuln di DC
+    FAIL_ON_ISSUES = 'false'   // set 'true' kalau mau fail build bila scanner return non-zero
   }
 
   stages {
@@ -12,7 +11,7 @@ pipeline {
       steps { cleanWs() }
     }
 
-    stage('Checkout Repository') {
+    stage('Checkout') {
       steps {
         checkout([$class: 'GitSCM',
           branches: [[name: '*/main']],
@@ -22,31 +21,13 @@ pipeline {
       }
     }
 
-    // ===== Build (opsional; aman walau tidak ada pom.xml) =====
-    stage('Build with Maven') {
-      agent {
-        docker {
-          image 'maven:3.9.9-eclipse-temurin-11'
-          reuseNode true
-        }
-      }
-      steps {
-        script {
-          def ec = sh(returnStatus: true, script: 'mvn -B clean package -DskipTests')
-          if (ec != 0) {
-            echo "Maven build skipped/failed (exit ${ec}). Lanjut SCA & container build."
-          }
-        }
-      }
-    }
-
-    // ===== SCA: OWASP Dependency-Check =====
-    stage('SCA - OWASP Dependency-Check') {
+    // ===== SCA: OWASP Dependency-Check (scan seluruh repo) =====
+    stage('SCA - Dependency-Check (repo)') {
       agent {
         docker {
           image 'owasp/dependency-check:latest'
           reuseNode true
-          // cache NVD + temp agar cepat/stabil
+          // cache NVD + temp biar cepat & stabil
           args "-v ${WORKSPACE}/.odc:/usr/share/dependency-check/data -v ${WORKSPACE}/.odc-temp:/tmp"
         }
       }
@@ -57,10 +38,10 @@ pipeline {
               set -e
               mkdir -p dependency-check-report
 
-              # (opsional) update DB; jangan hentikan pipeline bila gagal
+              # update DB (kalau gagal, lanjut saja)
               /usr/share/dependency-check/bin/dependency-check.sh --updateonly || true
 
-              # scan seluruh repo (lebih aman dari ./src saja)
+              # scan seluruh repo; --failOnCVSS 11 artinya temuan tidak menjatuhkan exit code
               set +e
               /usr/share/dependency-check/bin/dependency-check.sh \
                 --project "Testing-Sast" \
@@ -92,59 +73,56 @@ pipeline {
                 reportName: 'Dependency-Check Report'
               ])
             } else {
-              echo "Dependency-Check report tidak ditemukan. Cek dependency-check-report/dependency-check.log"
+              echo "Dependency-Check HTML report tidak ditemukan. Cek dependency-check-report/dependency-check.log"
             }
           }
         }
       }
     }
 
-    // ===== Docker Build (wajib sukses agar Trivy bisa scan image) =====
-    stage('Build Docker Image') {
-      steps {
-        script {
-          def e1 = sh(returnStatus: true, script: 'docker version')
-          if (e1 != 0) {
-            error "Docker daemon tidak siap (exit ${e1})."
-          }
-          def e2 = sh(returnStatus: true, script: 'docker build -t testing-sast:latest .')
-          if (e2 != 0) {
-            error "Docker build gagal (exit ${e2}). Periksa Dockerfile sesuai tipe project."
-          }
-        }
-      }
-    }
-
-    // ===== SCA: Trivy (scan image) =====
-    stage('SCA - Trivy Docker Scan') {
+    // ===== SCA: Trivy (filesystem)—tanpa build image =====
+    stage('SCA - Trivy (filesystem)') {
       agent {
         docker {
           image 'aquasec/trivy:latest'
           reuseNode true
-          // kosongkan entrypoint + mount docker.sock + cache
-          args '--entrypoint="" -v /var/run/docker.sock:/var/run/docker.sock -v ${WORKSPACE}/.trivy-cache:/root/.cache/trivy'
+          // kosongkan entrypoint agar Jenkins bisa keep container; mount cache
+          args '--entrypoint="" -v ${WORKSPACE}/.trivy-cache:/root/.cache/trivy'
         }
       }
       steps {
         catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
           script {
+            sh 'rm -f trivy-fs.txt trivy-fs.sarif || true'
             def ec = sh(returnStatus: true, script: '''
               set +e
-              trivy --version || true
-              trivy image --no-progress --exit-code 0 \
-                --severity HIGH,CRITICAL testing-sast:latest | tee trivy-report.txt
+              # scan filesystem (repo saat ini)
+              trivy fs --no-progress --exit-code 0 \
+                --severity HIGH,CRITICAL . | tee trivy-fs.txt
+
+              # (opsional) sarif untuk future integration
+              trivy fs --no-progress --exit-code 0 \
+                --severity HIGH,CRITICAL --format sarif -o trivy-fs.sarif .
             ''')
-            echo "Trivy scan exit code: ${ec}"
+            echo "Trivy FS scan exit code: ${ec}"
+            if (env.FAIL_ON_ISSUES == 'true' && ec != 0) {
+              error "Fail build (policy) karena Trivy FS exit ${ec}"
+            }
           }
         }
       }
       post {
         always {
           script {
-            if (fileExists('trivy-report.txt')) {
-              archiveArtifacts artifacts: 'trivy-report.txt', fingerprint: true
+            if (fileExists('trivy-fs.txt')) {
+              archiveArtifacts artifacts: 'trivy-fs.txt', fingerprint: true
             } else {
-              echo "trivy-report.txt tidak ditemukan. Pastikan image 'testing-sast:latest' berhasil dibuild."
+              echo "trivy-fs.txt tidak ditemukan."
+            }
+            if (fileExists('trivy-fs.sarif')) {
+              archiveArtifacts artifacts: 'trivy-fs.sarif', fingerprint: true
+              // kalau pakai Warnings NG + SARIF bisa dipublish juga:
+              // recordIssues tools: [sarif(pattern: 'trivy-fs.sarif')], enabledForFailure: true
             }
           }
         }
@@ -154,7 +132,7 @@ pipeline {
 
   post {
     always {
-      echo "Pipeline selesai bro, result: ${currentBuild.currentResult}"
+      echo "Pipeline selesai. Result: ${currentBuild.currentResult}"
     }
   }
 }
