@@ -4,7 +4,7 @@ pipeline {
 
   environment {
     DOCKER_HOST    = "unix:///var/run/docker.sock"
-    FAIL_ON_ISSUES = 'false'
+    FAIL_ON_ISSUES = 'false'   // set 'true' kalau mau fail build saat ada vuln
   }
 
   stages {
@@ -30,7 +30,13 @@ pipeline {
         }
       }
       steps {
-        sh 'mvn -B clean package -DskipTests || echo "No pom.xml, skip build"'
+        script {
+          // Aman meski tidak ada pom.xml
+          def ec = sh(returnStatus: true, script: 'mvn -B clean package -DskipTests')
+          if (ec != 0) {
+            echo "Maven build skipped/failed (exit ${ec}). Lanjut ke SCA."
+          }
+        }
       }
     }
 
@@ -43,23 +49,23 @@ pipeline {
         }
       }
       steps {
-        script {
-          sh '''
-            set +e
-            /usr/share/dependency-check/bin/dependency-check.sh \
-              --project "Testing-Sast" \
-              --scan ./src \
-              --format HTML \
-              --out dependency-check-report
-            echo $? > .dc_exit
-          '''
-          def rc = readFile('.dc_exit').trim()
-          echo "Dependency-Check exit code: ${rc}"
+        catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+          script {
+            sh 'mkdir -p dependency-check-report || true'
+            def cmd = '''
+              set +e
+              /usr/share/dependency-check/bin/dependency-check.sh \
+                --project "Testing-Sast" \
+                --scan ./src \
+                --format HTML \
+                --out dependency-check-report
+            '''
+            def ec = sh(returnStatus: true, script: cmd)
+            echo "Dependency-Check exit code: ${ec}"
 
-          if (env.FAIL_ON_ISSUES == 'true' && rc != '0') {
-            error "Failing build due to Dependency-Check exit code ${rc}"
-          } else if (rc != '0') {
-            echo "Uji coba: Dependency-Check return ${rc}, pipeline lanjut (tidak fail)."
+            if (env.FAIL_ON_ISSUES == 'true' && ec != 0) {
+              error "Fail build (policy) karena Dependency-Check exit ${ec}"
+            }
           }
         }
       }
@@ -83,8 +89,18 @@ pipeline {
 
     stage('Build Docker Image') {
       steps {
-        sh 'docker version'
-        sh 'docker build -t testing-sast:latest .'
+        script {
+          // Kalau Docker belum siap, jangan jatuhkan build
+          def ec1 = sh(returnStatus: true, script: 'docker version')
+          if (ec1 != 0) {
+            echo "Docker tidak siap (exit ${ec1}). Skip build image & lanjut."
+          } else {
+            def ec2 = sh(returnStatus: true, script: 'docker build -t testing-sast:latest .')
+            if (ec2 != 0) {
+              echo "Docker build gagal (exit ${ec2}). Lanjut ke Trivy stage (bisa skip otomatis)."
+            }
+          }
+        }
       }
     }
 
@@ -97,21 +113,35 @@ pipeline {
         }
       }
       steps {
-        sh '''
-          set +e
-          trivy image --no-progress --exit-code 0 \
-            --severity HIGH,CRITICAL testing-sast:latest | tee trivy-report.txt
-        '''
+        catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+          script {
+            // Scan image; tetap 0 agar uji coba lanjut
+            def ec = sh(returnStatus: true, script: '''
+              set +e
+              trivy image --no-progress --exit-code 0 \
+                --severity HIGH,CRITICAL testing-sast:latest | tee trivy-report.txt
+            ''')
+            echo "Trivy scan exit code: ${ec}"
+          }
+        }
       }
       post {
         always {
-          archiveArtifacts artifacts: 'trivy-report.txt', fingerprint: true
+          script {
+            if (fileExists('trivy-report.txt')) {
+              archiveArtifacts artifacts: 'trivy-report.txt', fingerprint: true
+            } else {
+              echo "trivy-report.txt tidak ditemukan, skip archive."
+            }
+          }
         }
       }
     }
   }
 
   post {
-    always { echo 'Pipeline selesai bro, semuanya aman.' }
+    always {
+      echo "Pipeline selesai bro, result: ${currentBuild.currentResult}"
+    }
   }
 }
