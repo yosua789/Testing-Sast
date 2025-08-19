@@ -1,6 +1,10 @@
 pipeline {
     agent any
 
+    environment {
+        DOCKER_HOST = "tcp://docker:2375"
+    }
+
     stages {
         stage('Checkout') {
             steps {
@@ -11,7 +15,10 @@ pipeline {
 
         stage('Build') {
             agent {
-                docker { image 'maven:3.8.8-openjdk-11' }
+                docker { 
+                    image 'maven:3.8.8-openjdk-11'
+                    args '-e DOCKER_HOST=tcp://docker:2375'
+                }
             }
             steps {
                 sh 'mvn clean package -DskipTests'
@@ -20,7 +27,10 @@ pipeline {
 
         stage('SCA - Dependency Check') {
             agent {
-                docker { image 'owasp/dependency-check:latest' }
+                docker {
+                    image 'owasp/dependency-check:latest'
+                    args '-e DOCKER_HOST=tcp://docker:2375'
+                }
             }
             steps {
                 sh '''
