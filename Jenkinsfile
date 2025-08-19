@@ -2,22 +2,28 @@ pipeline {
     agent any
 
     environment {
+        // Docker daemon host (jika mau pakai Docker inside Jenkins)
         DOCKER_HOST = "unix:///var/run/docker.sock"
     }
 
     stages {
-        // Checkout di node host, bukan container
-        stage('Checkout') {
+        // ===============================
+        stage('Checkout Source Code') {
             steps {
-                checkout scm
+                // Checkout langsung di Jenkins host
+                checkout([$class: 'GitSCM',
+                          branches: [[name: '*/main']],
+                          userRemoteConfigs: [[url: 'https://github.com/yosua789/Testing-Sast.git']]
+                ])
             }
         }
 
-        // Build Maven pakai Docker container
+        // ===============================
         stage('Build with Maven') {
             agent {
                 docker {
                     image 'maven:3.8.8-openjdk-11'
+                    // Mount workspace + Docker socket supaya bisa akses docker
                     args '-v /var/run/docker.sock:/var/run/docker.sock -v $WORKSPACE:$WORKSPACE -w $WORKSPACE'
                 }
             }
@@ -26,7 +32,7 @@ pipeline {
             }
         }
 
-        // Dependency check dengan container
+        // ===============================
         stage('SCA - Dependency Check') {
             agent {
                 docker {
@@ -54,14 +60,14 @@ pipeline {
             }
         }
 
-        // Build Docker image
+        // ===============================
         stage('Build Docker Image') {
             steps {
                 sh 'docker build -t testing-sast:latest .'
             }
         }
 
-        // Trivy scan
+        // ===============================
         stage('SCA - Trivy Docker Scan') {
             steps {
                 sh 'trivy image --exit-code 0 --severity HIGH,CRITICAL testing-sast:latest > trivy-report.txt'
@@ -74,9 +80,10 @@ pipeline {
         }
     }
 
+    // ===============================
     post {
         always {
-            echo "Pipeline done"
+            echo "Pipeline done ✅"
         }
     }
 }
