@@ -5,11 +5,26 @@ pipeline {
         DOCKER_HOST = "unix:///var/run/docker.sock"
     }
 
+    options {
+        skipDefaultCheckout true
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timestamps()
+    }
+
     stages {
+        stage('Clean Workspace') {
+            steps {
+                deleteDir()
+            }
+        }
+
         stage('Checkout') {
             steps {
-                git branch: 'main',
-                    url: 'https://github.com/yosua789/Testing-Sast.git'
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: 'main']],
+                    userRemoteConfigs: [[url: 'https://github.com/yosua789/Testing-Sast.git']]
+                ])
             }
         }
 
