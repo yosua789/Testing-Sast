@@ -1,6 +1,6 @@
 pipeline {
   agent any
-  options { skipDefaultCheckout(true) } 
+  options { skipDefaultCheckout(true) }
 
   environment {
     DOCKER_HOST = "unix:///var/run/docker.sock"
@@ -24,8 +24,8 @@ pipeline {
     stage('Build with Maven') {
       agent {
         docker {
-          image 'maven:3.8.8-openjdk-11'
-          reuseNode true               
+          image 'maven:3.9.9-eclipse-temurin-11'
+          reuseNode true
         }
       }
       steps {
@@ -63,7 +63,7 @@ pipeline {
 
     stage('Build Docker Image') {
       steps {
-        sh 'docker version'              
+        sh 'docker version'
         sh 'docker build -t testing-sast:latest .'
       }
     }
