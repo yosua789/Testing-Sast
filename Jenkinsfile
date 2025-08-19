@@ -1,5 +1,6 @@
 pipeline {
   agent any
+  options { skipDefaultCheckout(true) } 
 
   environment {
     DOCKER_HOST = "unix:///var/run/docker.sock"
@@ -14,7 +15,6 @@ pipeline {
       steps {
         checkout([$class: 'GitSCM',
           branches: [[name: '*/main']],
-          doGenerateSubmoduleConfigurations: false,
           extensions: [[$class: 'CloneOption', shallow: false, noTags: false]],
           userRemoteConfigs: [[url: 'https://github.com/yosua789/Testing-Sast.git']]
         ])
@@ -25,6 +25,7 @@ pipeline {
       agent {
         docker {
           image 'maven:3.8.8-openjdk-11'
+          reuseNode true               
         }
       }
       steps {
@@ -36,6 +37,7 @@ pipeline {
       agent {
         docker {
           image 'owasp/dependency-check:latest'
+          reuseNode true
           args "-v ${WORKSPACE}/.odc:/usr/share/dependency-check/data"
         }
       }
@@ -61,7 +63,7 @@ pipeline {
 
     stage('Build Docker Image') {
       steps {
-        sh 'docker version'
+        sh 'docker version'              
         sh 'docker build -t testing-sast:latest .'
       }
     }
@@ -70,6 +72,7 @@ pipeline {
       agent {
         docker {
           image 'aquasec/trivy:latest'
+          reuseNode true
           args '-v /var/run/docker.sock:/var/run/docker.sock'
         }
       }
@@ -85,8 +88,6 @@ pipeline {
   }
 
   post {
-    always {
-      echo 'Pipeline selesai bro, semuanya aman.'
-    }
+    always { echo 'Pipeline selesai bro, semuanya aman.' }
   }
 }
