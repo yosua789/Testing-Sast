@@ -6,11 +6,21 @@ pipeline {
     }
 
     stages {
+        stage('Clean Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+
         stage('Checkout') {
             steps {
-                // Checkout repo di Jenkins utama
-                git branch: 'main',
-                    url: 'https://github.com/yosua789/Testing-Sast.git'
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    doGenerateSubmoduleConfigurations: false,
+                    extensions: [[$class: 'CloneOption', noTags: false, shallow: false]],
+                    userRemoteConfigs: [[url: 'https://github.com/yosua789/Testing-Sast.git']]
+                ])
             }
         }
 
@@ -18,7 +28,7 @@ pipeline {
             agent {
                 docker {
                     image 'maven:3.8.8-openjdk-11'
-                    args '-v /var/run/docker.sock:/var/run/docker.sock -v $WORKSPACE:$WORKSPACE -w $WORKSPACE'
+                    args '-v /var/run/docker.sock:/var/run/docker.sock'
                 }
             }
             steps {
@@ -30,16 +40,16 @@ pipeline {
             agent {
                 docker {
                     image 'owasp/dependency-check:latest'
-                    args '-v /var/run/docker.sock:/var/run/docker.sock -v $WORKSPACE:$WORKSPACE -w $WORKSPACE'
+                    args '-v /var/run/docker.sock:/var/run/docker.sock'
                 }
             }
             steps {
                 sh '''
                     dependency-check.sh \
-                      --project Testing-Sast \
-                      --scan ./src/main \
-                      --format HTML \
-                      --out dependency-check-report
+                        --project Testing-Sast \
+                        --scan ./src/main \
+                        --format HTML \
+                        --out dependency-check-report
                 '''
             }
             post {
