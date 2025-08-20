@@ -3,7 +3,7 @@ pipeline {
   options { skipDefaultCheckout(true) }
 
   environment {
-    FAIL_ON_ISSUES = 'false'   // set 'true' kalau mau fail build bila scanner return non-zero
+    FAIL_ON_ISSUES = 'false'
   }
 
   stages {
@@ -21,13 +21,12 @@ pipeline {
       }
     }
 
-    // ===== SCA: OWASP Dependency-Check (scan seluruh repo) =====
+    // ===== SCA: OWASP Dependency-Check =====
     stage('SCA - Dependency-Check (repo)') {
       agent {
         docker {
           image 'owasp/dependency-check:latest'
           reuseNode true
-          // cache NVD + temp biar cepat & stabil
           args "-v ${WORKSPACE}/.odc:/usr/share/dependency-check/data -v ${WORKSPACE}/.odc-temp:/tmp"
         }
       }
@@ -38,10 +37,9 @@ pipeline {
               set -e
               mkdir -p dependency-check-report
 
-              # update DB (kalau gagal, lanjut saja)
+              # update DB (if fail, keep continue)
               /usr/share/dependency-check/bin/dependency-check.sh --updateonly || true
-
-              # scan seluruh repo; --failOnCVSS 11 artinya temuan tidak menjatuhkan exit code
+              
               set +e
               /usr/share/dependency-check/bin/dependency-check.sh \
                 --project "Testing-Sast" \
@@ -80,13 +78,12 @@ pipeline {
       }
     }
 
-    // ===== SCA: Trivy (filesystem)—tanpa build image =====
+    // ===== SCA: Trivy (scan system container) =====
     stage('SCA - Trivy (filesystem)') {
       agent {
         docker {
           image 'aquasec/trivy:latest'
           reuseNode true
-          // kosongkan entrypoint agar Jenkins bisa keep container; mount cache
           args '--entrypoint="" -v ${WORKSPACE}/.trivy-cache:/root/.cache/trivy'
         }
       }
@@ -96,17 +93,15 @@ pipeline {
             sh 'rm -f trivy-fs.txt trivy-fs.sarif || true'
             def ec = sh(returnStatus: true, script: '''
               set +e
-              # scan filesystem (repo saat ini)
               trivy fs --no-progress --exit-code 0 \
                 --severity HIGH,CRITICAL . | tee trivy-fs.txt
 
-              # (opsional) sarif untuk future integration
               trivy fs --no-progress --exit-code 0 \
                 --severity HIGH,CRITICAL --format sarif -o trivy-fs.sarif .
             ''')
             echo "Trivy FS scan exit code: ${ec}"
             if (env.FAIL_ON_ISSUES == 'true' && ec != 0) {
-              error "Fail build (policy) karena Trivy FS exit ${ec}"
+              error "Fail build (policy) if Trivy FS exit ${ec}"
             }
           }
         }
@@ -121,8 +116,6 @@ pipeline {
             }
             if (fileExists('trivy-fs.sarif')) {
               archiveArtifacts artifacts: 'trivy-fs.sarif', fingerprint: true
-              // kalau pakai Warnings NG + SARIF bisa dipublish juga:
-              // recordIssues tools: [sarif(pattern: 'trivy-fs.sarif')], enabledForFailure: true
             }
           }
         }
@@ -132,7 +125,7 @@ pipeline {
 
   post {
     always {
-      echo "Pipeline selesai. Result: ${currentBuild.currentResult}"
+      echo "Scanning All Done. Result: ${currentBuild.currentResult}"
     }
   }
 }
