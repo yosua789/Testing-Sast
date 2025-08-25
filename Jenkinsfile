@@ -79,7 +79,7 @@ pipeline {
             def rc = readFile('.dc_exit').trim()
             echo "Dependency-Check exit code: ${rc}"
             if (env.FAIL_ON_ISSUES == 'true' && rc != '0') {
-              error "Fail build (policy) karena Dependency-Check exit ${rc}"
+              error "Fail build (policy) Dependency-Check exit ${rc}"
             }
           }
         }
@@ -93,7 +93,7 @@ pipeline {
             if (fileExists('dependency-check-report/dependency-check-report.html')) {
               publishHTML(target: [reportDir: 'dependency-check-report', reportFiles: 'dependency-check-report.html', reportName: 'Dependency-Check Report'])
             } else {
-              echo "Dependency-Check HTML report tidak ditemukan."
+              echo "Dependency-Check HTML report not found"
             }
           }
         }
@@ -162,7 +162,7 @@ pipeline {
             def ec = readFile('.semgrep_exit').trim()
             sh 'ls -lh semgrep.* || true'
             if (env.FAIL_ON_ISSUES == 'true' && ec != '0') {
-              error "Fail build (policy) karena Semgrep exit ${ec}"
+              error "Fail build (policy) Semgrep exit ${ec}"
             }
           }
         }
