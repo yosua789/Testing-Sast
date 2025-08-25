@@ -3,7 +3,12 @@ pipeline {
   options { skipDefaultCheckout(true) }
 
   environment {
-    FAIL_ON_ISSUES = 'false'
+    FAIL_ON_ISSUES     = 'false'
+
+    // SonarQube
+    SONAR_HOST_URL     = 'http://sonarqube:9000'
+    SONAR_PROJECT_KEY  = 'SAST-Testing'
+    SONAR_PROJECT_NAME = 'SAST-Testing'
   }
 
   stages {
@@ -22,6 +27,30 @@ pipeline {
       }
     }
 
+    // === SAST: SonarQube (scan source code) ===
+    stage('SAST - SonarQube') {
+      steps {
+        withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
+          sh '''
+            set -e
+            docker pull --platform linux/arm64 sonarsource/sonar-scanner-cli
+            docker run --rm --platform linux/arm64 --network jenkins \
+              -v "$WORKSPACE:/usr/src" \
+              sonarsource/sonar-scanner-cli \
+                -Dsonar.host.url="$SONAR_HOST_URL" \
+                -Dsonar.token="$SONAR_TOKEN" \
+                -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+                -Dsonar.projectName="$SONAR_PROJECT_NAME" \
+                -Dsonar.sources=. \
+                -Dsonar.inclusions="**/*" \
+                -Dsonar.exclusions="**/log/**,**/log4/**,**/log_3/**,**/*.test.*,**/node_modules/**,**/dist/**,**/build/**,docker-compose.yaml" \
+                -Dsonar.coverage.exclusions="**/*.test.*,**/test/**,**/tests**"
+          '''
+        }
+      }
+    }
+
+    // === SCA: OWASP Dependency-Check ===
     stage('SCA - Dependency-Check (repo)') {
       agent {
         docker {
@@ -36,14 +65,7 @@ pipeline {
             sh '''
               set -e
               mkdir -p dependency-check-report
-
-              # Siapkan cache folders agar pasti writable
-              mkdir -p /usr/share/dependency-check/data || true
-              mkdir -p /tmp || true
-
-              # Update DB (gagal pun lanjut)
               /usr/share/dependency-check/bin/dependency-check.sh --updateonly || true
-
               set +e
               /usr/share/dependency-check/bin/dependency-check.sh \
                 --project "Testing-Sast" \
@@ -69,19 +91,16 @@ pipeline {
               archiveArtifacts artifacts: 'dependency-check-report/dependency-check.log', fingerprint: true
             }
             if (fileExists('dependency-check-report/dependency-check-report.html')) {
-              publishHTML(target: [
-                reportDir: 'dependency-check-report',
-                reportFiles: 'dependency-check-report.html',
-                reportName: 'Dependency-Check Report'
-              ])
+              publishHTML(target: [reportDir: 'dependency-check-report', reportFiles: 'dependency-check-report.html', reportName: 'Dependency-Check Report'])
             } else {
-              echo "Dependency-Check HTML report tidak ditemukan. Cek dependency-check-report/dependency-check.log"
+              echo "Dependency-Check HTML report tidak ditemukan."
             }
           }
         }
       }
     }
 
+    // === SCA: Trivy (filesystem) ===
     stage('SCA - Trivy (filesystem)') {
       agent {
         docker {
@@ -96,33 +115,61 @@ pipeline {
             sh 'rm -f trivy-fs.txt trivy-fs.sarif || true'
             def ec = sh(returnStatus: true, script: '''
               set +e
-              trivy fs --no-progress --exit-code 0 \
-                --severity HIGH,CRITICAL . | tee trivy-fs.txt
-
-              trivy fs --no-progress --exit-code 0 \
-                --severity HIGH,CRITICAL --format sarif -o trivy-fs.sarif .
+              trivy fs --no-progress --exit-code 0 --severity HIGH,CRITICAL . | tee trivy-fs.txt
+              trivy fs --no-progress --exit-code 0 --severity HIGH,CRITICAL --format sarif -o trivy-fs.sarif .
             ''')
             echo "Trivy FS scan exit code: ${ec}"
             if (env.FAIL_ON_ISSUES == 'true' && ec != 0) {
               error "Fail build (policy) if Trivy FS exit ${ec}"
             }
+            sh 'ls -lh trivy-fs.* || true'
           }
         }
       }
       post {
         always {
           script {
-            if (fileExists('trivy-fs.txt')) {
-              archiveArtifacts artifacts: 'trivy-fs.txt', fingerprint: true
-            } else {
-              echo "trivy-fs.txt tidak ditemukan."
-            }
-            if (fileExists('trivy-fs.sarif')) {
-              archiveArtifacts artifacts: 'trivy-fs.sarif', fingerprint: true
-            } else {
-              echo "trivy-fs.sarif tidak ditemukan."
+            if (fileExists('trivy-fs.txt'))   { archiveArtifacts artifacts: 'trivy-fs.txt', fingerprint: true }
+            if (fileExists('trivy-fs.sarif')) { archiveArtifacts artifacts: 'trivy-fs.sarif', fingerprint: true }
+          }
+        }
+      }
+    }
+
+    // === SAST: Semgrep ===
+    stage('SAST - Semgrep') {
+      agent {
+        docker {
+          image 'semgrep/semgrep:latest'
+          reuseNode true
+          args '--entrypoint='
+        }
+      }
+      steps {
+        catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+          script {
+            sh '''
+              set +e
+              semgrep --version || true
+              semgrep scan \
+                --config p/ci --config p/owasp-top-ten --config p/docker \
+                --exclude 'log/**' --exclude '**/node_modules/**' --exclude '**/dist/**' --exclude '**/build/**' \
+                --sarif -o semgrep.sarif \
+                --junit-xml --junit-xml-file semgrep-junit.xml \
+                --severity error --error
+              EC=$?; echo $EC > .semgrep_exit
+            '''
+            def ec = readFile('.semgrep_exit').trim()
+            sh 'ls -lh semgrep.* || true'
+            if (env.FAIL_ON_ISSUES == 'true' && ec != '0') {
+              error "Fail build (policy) karena Semgrep exit ${ec}"
             }
           }
+        }
+      }
+      post {
+        always {
+          archiveArtifacts artifacts: 'semgrep.sarif, semgrep-junit.xml', fingerprint: true, onlyIfSuccessful: false
         }
       }
     }
@@ -130,6 +177,15 @@ pipeline {
 
   post {
     always {
+      script {
+        if (fileExists('semgrep.sarif'))   { recordIssues(enabledForFailure: true, tools: [sarif(pattern: 'semgrep.sarif',   id: 'Semgrep')]) }
+        if (fileExists('trivy-fs.sarif'))  { recordIssues(enabledForFailure: true, tools: [sarif(pattern: 'trivy-fs.sarif', id: 'Trivy FS')]) }
+        if (fileExists('semgrep-junit.xml')) {
+          junit allowEmptyResults: false, testResults: 'semgrep-junit.xml'
+        } else {
+          echo "semgrep-junit.xml not found"
+        }
+      }
       echo "Scanning All Done. Result: ${currentBuild.currentResult}"
     }
   }
