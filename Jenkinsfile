@@ -7,8 +7,8 @@ pipeline {
 
     // SonarQube
     SONAR_HOST_URL     = 'http://sonarqube:9000'
-    SONAR_PROJECT_KEY  = 'KONTOL'
-    SONAR_PROJECT_NAME = 'KONTOL'
+    SONAR_PROJECT_KEY  = 'ASU'
+    SONAR_PROJECT_NAME = 'ASU'
   }
 
   stages {
@@ -30,7 +30,7 @@ pipeline {
     // === SAST: SonarQube (scan source code) ===
     stage('SAST - SonarQube') {
       steps {
-        withCredentials([string(credentialsId: 'sonarqube_token', variable: 'SONAR_TOKEN')]) {
+        withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
           sh '''
             set -e
             docker pull --platform linux/arm64 sonarsource/sonar-scanner-cli
