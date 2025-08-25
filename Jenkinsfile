@@ -18,16 +18,16 @@ pipeline {
           extensions: [[$class: 'CloneOption', shallow: false, noTags: false]],
           userRemoteConfigs: [[url: 'https://github.com/yosua789/Testing-Sast.git']]
         ])
+        sh 'echo "WS: $WORKSPACE" && ls -la'
       }
     }
 
-    // ===== SCA: OWASP Dependency-Check =====
     stage('SCA - Dependency-Check (repo)') {
       agent {
         docker {
           image 'owasp/dependency-check:latest'
           reuseNode true
-          args "-v ${WORKSPACE}/.odc:/usr/share/dependency-check/data -v ${WORKSPACE}/.odc-temp:/tmp"
+          args "-v $WORKSPACE/.odc:/usr/share/dependency-check/data -v $WORKSPACE/.odc-temp:/tmp"
         }
       }
       steps {
@@ -37,9 +37,13 @@ pipeline {
               set -e
               mkdir -p dependency-check-report
 
-              # update DB (if fail, keep continue)
+              # Siapkan cache folders agar pasti writable
+              mkdir -p /usr/share/dependency-check/data || true
+              mkdir -p /tmp || true
+
+              # Update DB (gagal pun lanjut)
               /usr/share/dependency-check/bin/dependency-check.sh --updateonly || true
-              
+
               set +e
               /usr/share/dependency-check/bin/dependency-check.sh \
                 --project "Testing-Sast" \
@@ -78,13 +82,12 @@ pipeline {
       }
     }
 
-    // ===== SCA: Trivy (scan system container) =====
     stage('SCA - Trivy (filesystem)') {
       agent {
         docker {
           image 'aquasec/trivy:latest'
           reuseNode true
-          args '--entrypoint="" -v ${WORKSPACE}/.trivy-cache:/root/.cache/trivy'
+          args "--entrypoint= -v $WORKSPACE/.trivy-cache:/root/.cache/trivy"
         }
       }
       steps {
@@ -116,6 +119,8 @@ pipeline {
             }
             if (fileExists('trivy-fs.sarif')) {
               archiveArtifacts artifacts: 'trivy-fs.sarif', fingerprint: true
+            } else {
+              echo "trivy-fs.sarif tidak ditemukan."
             }
           }
         }
