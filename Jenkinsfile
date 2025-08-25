@@ -7,8 +7,8 @@ pipeline {
 
     // SonarQube
     SONAR_HOST_URL     = 'http://sonarqube:9000'
-    SONAR_PROJECT_KEY  = 'SAST-Testing'
-    SONAR_PROJECT_NAME = 'SAST-Testing'
+    SONAR_PROJECT_KEY  = 'sast'
+    SONAR_PROJECT_NAME = 'sast'
   }
 
   stages {
