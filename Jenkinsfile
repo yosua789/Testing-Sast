@@ -28,13 +28,32 @@ pipeline {
     // === SAST: SonarQube (scan source code) ===
     stage('SAST - SonarQube') {
       steps {
-        withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
+        withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN_RAW')]) {
           sh '''
-            set -e
-            docker pull --platform linux/arm64 sonarsource/sonar-scanner-cli
+            set -euo pipefail
+
+            # Trim any accidental newline/whitespace from Jenkins secret
+            SONAR_TOKEN="$(printf %s "$SONAR_TOKEN_RAW" | tr -d "\\r\\n")"
+            export SONAR_TOKEN
+
+            echo "[preflight] Checking connectivity to $SONAR_HOST_URL from the 'jenkins' network…"
+            docker run --rm --platform linux/arm64 --network jenkins curlimages/curl \
+              -sS -o /dev/null -w "HTTP %{http_code}\\n" "$SONAR_HOST_URL/api/server/version"
+
+            echo "[preflight] Validating token inside the 'jenkins' network…"
+            docker run --rm --platform linux/arm64 --network jenkins curlimages/curl \
+              -sSf -u "$SONAR_TOKEN:" "$SONAR_HOST_URL/api/authentication/validate" \
+              | tee /dev/stderr | grep -q '"valid":true'
+
+            echo "[scan] Pulling scanner image…"
+            docker pull --platform linux/arm64 sonarsource/sonar-scanner-cli:6
+
+            echo "[scan] Running sonar-scanner…"
             docker run --rm --platform linux/arm64 --network jenkins \
               -v "$WORKSPACE:/usr/src" \
-              sonarsource/sonar-scanner-cli \
+              -w /usr/src \
+              sonarsource/sonar-scanner-cli:6 \
+                -X \
                 -Dsonar.host.url="$SONAR_HOST_URL" \
                 -Dsonar.token="$SONAR_TOKEN" \
                 -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
