@@ -3,11 +3,11 @@ pipeline {
   options { skipDefaultCheckout(true) }
 
   environment {
-    FAIL_ON_ISSUES     = 'false'                 // set 'true' untuk enforce Quality Gate & fail on issues
-    SONAR_HOST_URL     = 'http://sonarqube:9000' // gunakan DNS container di network jenkins
-    SONAR_PROJECT_KEY  = 'babi'
-    SONAR_PROJECT_NAME = 'babi'
-    DOCKER_NET         = 'jenkins'               // ganti jika nama network berbeda
+    FAIL_ON_ISSUES     = 'false'
+    SONAR_HOST_URL     = 'http://sonarqube:9000'
+    SONAR_PROJECT_KEY  = 'coba'
+    SONAR_PROJECT_NAME = 'coba'
+    DOCKER_NET         = 'jenkins'
   }
 
   stages {
