@@ -60,12 +60,11 @@ pipeline {
       }
     }
 
-    // === SAST: SonarQube (babi) ===
-    stage('SAST - SonarQube (babi)') {
+    // === SAST: SonarQube ===
+    stage('SAST - SonarQube (coba)') {
       steps {
-        withEnv(['SONAR_PROJECT_KEY=babi','SONAR_PROJECT_NAME=babi']) {   // safety belt
+        withEnv(['SONAR_PROJECT_KEY=coba','SONAR_PROJECT_NAME=coba']) {
           withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN_RAW')]) {
-            // Jalankan isi step di BASH via heredoc supaya 'pipefail' valid
             sh '''
 bash <<'BASH'
 set -Eeuo pipefail
@@ -74,7 +73,7 @@ set -Eeuo pipefail
 SONAR_TOKEN="$(printf %s "$SONAR_TOKEN_RAW" | tr -d '\\r\\n')"
 
 echo "[assert] SONAR_PROJECT_KEY=$SONAR_PROJECT_KEY"
-test "$SONAR_PROJECT_KEY" = "babi" || { echo "ProjectKey bukan 'babi'!"; exit 1; }
+test "$SONAR_PROJECT_KEY" = "coba" || { echo "ProjectKey bukan 'coba'!"; exit 1; }
 
 echo "[preflight] Server reachable?"
 docker run --rm --platform linux/arm64 --network "$DOCKER_NET" curlimages/curl:8.11.1 \
@@ -84,10 +83,10 @@ echo "[preflight] Token valid?"
 docker run --rm --platform linux/arm64 --network "$DOCKER_NET" -e SONAR_TOKEN="$SONAR_TOKEN" curlimages/curl:8.11.1 \
   -sSf -u "$SONAR_TOKEN:" "$SONAR_HOST_URL/api/authentication/validate" | grep -q '"valid":true'
 
-echo "[preflight] Token bisa akses project 'babi'?"
+echo "[preflight] Token bisa akses project 'coba'?"
 docker run --rm --platform linux/arm64 --network "$DOCKER_NET" -e SONAR_TOKEN="$SONAR_TOKEN" curlimages/curl:8.11.1 \
   -sSf -u "$SONAR_TOKEN:" "$SONAR_HOST_URL/api/projects/search?projects=$SONAR_PROJECT_KEY" \
-  | grep -q '"key":"babi"' || { echo "Token TIDAK bisa akses 'babi'"; exit 1; }
+  | grep -q '"key":"coba"' || { echo "Token TIDAK bisa akses 'coba'"; exit 1; }
 
 echo "[scan] Pull scanner arm64…"
 docker pull --platform linux/arm64 sonarsource/sonar-scanner-cli:7.2.0.5079
