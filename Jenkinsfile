@@ -27,18 +27,34 @@ pipeline {
       }
     }
 
+    // Debug: tunjukkan ENV relevan yang masih mengandung 'demo-SAST'
+    stage('Debug ENV demo-SAST (scope)') {
+      steps {
+        sh '''
+          set -e
+          echo "[debug] ENV relevan (SONAR_|SCANNER_|PROJECT_) yang mengandung 'demo-SAST':"
+          printenv | grep -E '^(SONAR_|SCANNER_|PROJECT_)' | grep -n 'demo-SAST' || echo "Tidak ada."
+        '''
+      }
+    }
+
     // Guard: pastikan tidak ada konfigurasi demo-SAST (kecuali teks di Jenkinsfile)
     stage('Guard: no demo-SAST') {
       steps {
         sh '''
           set -e
-          echo "[guard] Cek 'demo-SAST' di repo (kecuali Jenkinsfile)…"
+          echo "[guard] Cek konfigurasi repo (kecuali Jenkinsfile)…"
           ! grep -R --line-number --exclude-dir=.git --exclude=Jenkinsfile \
-             -E '(-Dsonar\\.projectKey=demo-SAST|sonar\\.projectKey\\s*=\\s*demo-SAST)' . \
+             -E '(-Dsonar\\.projectKey=demo-SAST|sonar\\.projectKey[[:space:]]*=[[:space:]]*demo-SAST)' . \
              || { echo "Masih ada konfigurasi demo-SAST di file selain Jenkinsfile!"; exit 1; }
 
-          echo "[guard] Cek ENV…"
-          ! printenv | grep -q 'demo-SAST' || { echo "ENV masih mengandung demo-SAST!"; exit 1; }
+          echo "[guard] Cek ENV yang relevan (SONAR_|SCANNER_|PROJECT_)…"
+          BAD_ENV="$(printenv | grep -E '^(SONAR_|SCANNER_|PROJECT_)' | grep -F 'demo-SAST' || true)"
+          if [ -n "$BAD_ENV" ]; then
+            echo "[guard] Variabel bermasalah:"
+            echo "$BAD_ENV"
+            exit 1
+          fi
 
           echo "[guard] OK"
         '''
@@ -48,47 +64,50 @@ pipeline {
     // === SAST: SonarQube (babi) ===
     stage('SAST - SonarQube (babi)') {
       steps {
-        withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN_RAW')]) {
-          sh '''
-            set -euo pipefail
+        // Safety belt: paksa env Sonar benar walaupun ada ENV liar di Jenkins
+        withEnv(['SONAR_PROJECT_KEY=babi','SONAR_PROJECT_NAME=babi']) {
+          withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN_RAW')]) {
+            sh '''
+              set -euo pipefail
 
-            # Trim newline
-            SONAR_TOKEN="$(printf %s "$SONAR_TOKEN_RAW" | tr -d '\\r\\n')"
+              # Trim newline
+              SONAR_TOKEN="$(printf %s "$SONAR_TOKEN_RAW" | tr -d '\\r\\n')"
 
-            echo "[assert] SONAR_PROJECT_KEY=$SONAR_PROJECT_KEY"
-            test "$SONAR_PROJECT_KEY" = "babi" || { echo "ProjectKey bukan 'babi'!"; exit 1; }
+              echo "[assert] SONAR_PROJECT_KEY=$SONAR_PROJECT_KEY"
+              test "$SONAR_PROJECT_KEY" = "babi" || { echo "ProjectKey bukan 'babi'!"; exit 1; }
 
-            echo "[preflight] Server reachable?"
-            docker run --rm --platform linux/arm64 --network "$DOCKER_NET" curlimages/curl:8.11.1 \
-              -sS -o /dev/null -w "HTTP %{http_code}\\n" "$SONAR_HOST_URL/api/server/version"
+              echo "[preflight] Server reachable?"
+              docker run --rm --platform linux/arm64 --network "$DOCKER_NET" curlimages/curl:8.11.1 \
+                -sS -o /dev/null -w "HTTP %{http_code}\\n" "$SONAR_HOST_URL/api/server/version"
 
-            echo "[preflight] Token valid?"
-            docker run --rm --platform linux/arm64 --network "$DOCKER_NET" -e SONAR_TOKEN="$SONAR_TOKEN" curlimages/curl:8.11.1 \
-              -sSf -u "$SONAR_TOKEN:" "$SONAR_HOST_URL/api/authentication/validate" | grep -q '"valid":true'
+              echo "[preflight] Token valid?"
+              docker run --rm --platform linux/arm64 --network "$DOCKER_NET" -e SONAR_TOKEN="$SONAR_TOKEN" curlimages/curl:8.11.1 \
+                -sSf -u "$SONAR_TOKEN:" "$SONAR_HOST_URL/api/authentication/validate" | grep -q '"valid":true'
 
-            echo "[preflight] Token bisa akses project 'babi'?"
-            docker run --rm --platform linux/arm64 --network "$DOCKER_NET" -e SONAR_TOKEN="$SONAR_TOKEN" curlimages/curl:8.11.1 \
-              -sSf -u "$SONAR_TOKEN:" "$SONAR_HOST_URL/api/projects/search?projects=$SONAR_PROJECT_KEY" \
-              | grep -q '"key":"babi"' || { echo "Token TIDAK bisa akses 'babi'"; exit 1; }
+              echo "[preflight] Token bisa akses project 'babi'?"
+              docker run --rm --platform linux/arm64 --network "$DOCKER_NET" -e SONAR_TOKEN="$SONAR_TOKEN" curlimages/curl:8.11.1 \
+                -sSf -u "$SONAR_TOKEN:" "$SONAR_HOST_URL/api/projects/search?projects=$SONAR_PROJECT_KEY" \
+                | grep -q '"key":"babi"' || { echo "Token TIDAK bisa akses 'babi'"; exit 1; }
 
-            echo "[scan] Pull scanner arm64…"
-            docker pull --platform linux/arm64 sonarsource/sonar-scanner-cli:7.2.0.5079
+              echo "[scan] Pull scanner arm64…"
+              docker pull --platform linux/arm64 sonarsource/sonar-scanner-cli:7.2.0.5079
 
-            echo "[scan] Run sonar-scanner…"
-            docker run --rm --platform linux/arm64 --network "$DOCKER_NET" \
-              -v "$WORKSPACE:/usr/src" -w /usr/src \
-              -v "$WORKSPACE/.sonar-cache:/root/.sonar/cache" \
-              sonarsource/sonar-scanner-cli:7.2.0.5079 \
-                -X \
-                -Dsonar.host.url="$SONAR_HOST_URL" \
-                -Dsonar.token="$SONAR_TOKEN" \
-                -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
-                -Dsonar.projectName="$SONAR_PROJECT_NAME" \
-                -Dsonar.sources=. \
-                -Dsonar.inclusions="**/*" \
-                -Dsonar.exclusions="**/log/**,**/log4/**,**/log_3/**,**/*.test.*,**/node_modules/**,**/dist/**,**/build/**,docker-compose.yaml" \
-                -Dsonar.coverage.exclusions="**/*.test.*,**/test/**,**/tests**"
-          '''
+              echo "[scan] Run sonar-scanner…"
+              docker run --rm --platform linux/arm64 --network "$DOCKER_NET" \
+                -v "$WORKSPACE:/usr/src" -w /usr/src \
+                -v "$WORKSPACE/.sonar-cache:/root/.sonar/cache" \
+                sonarsource/sonar-scanner-cli:7.2.0.5079 \
+                  -X \
+                  -Dsonar.host.url="$SONAR_HOST_URL" \
+                  -Dsonar.token="$SONAR_TOKEN" \
+                  -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+                  -Dsonar.projectName="$SONAR_PROJECT_NAME" \
+                  -Dsonar.sources=. \
+                  -Dsonar.inclusions="**/*" \
+                  -Dsonar.exclusions="**/log/**,**/log4/**,**/log_3/**,**/*.test.*,**/node_modules/**,**/dist/**,**/build/**,docker-compose.yaml" \
+                  -Dsonar.coverage.exclusions="**/*.test.*,**/test/**,**/tests**"
+            '''
+          }
         }
       }
     }
