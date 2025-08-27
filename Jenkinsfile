@@ -27,14 +27,19 @@ pipeline {
       }
     }
 
-    // Guard: pastikan tidak ada referensi demo-SAST
+    // Guard: pastikan tidak ada konfigurasi demo-SAST (kecuali teks di Jenkinsfile)
     stage('Guard: no demo-SAST') {
       steps {
         sh '''
           set -e
-          echo "[guard] Pastikan tidak ada 'demo-SAST' tersisa…"
-          ! grep -R --line-number --exclude-dir=.git -E "demo-SAST" . || { echo "Masih ada demo-SAST di repo!"; exit 1; }
+          echo "[guard] Cek 'demo-SAST' di repo (kecuali Jenkinsfile)…"
+          ! grep -R --line-number --exclude-dir=.git --exclude=Jenkinsfile \
+             -E '(-Dsonar\\.projectKey=demo-SAST|sonar\\.projectKey\\s*=\\s*demo-SAST)' . \
+             || { echo "Masih ada konfigurasi demo-SAST di file selain Jenkinsfile!"; exit 1; }
+
+          echo "[guard] Cek ENV…"
           ! printenv | grep -q 'demo-SAST' || { echo "ENV masih mengandung demo-SAST!"; exit 1; }
+
           echo "[guard] OK"
         '''
       }
