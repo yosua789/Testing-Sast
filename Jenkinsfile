@@ -27,7 +27,6 @@ pipeline {
       }
     }
 
-    // Debug: tunjukkan ENV relevan yang masih mengandung 'demo-SAST'
     stage('Debug ENV demo-SAST (scope)') {
       steps {
         sh '''
@@ -64,48 +63,50 @@ pipeline {
     // === SAST: SonarQube (babi) ===
     stage('SAST - SonarQube (babi)') {
       steps {
-        // Safety belt: paksa env Sonar benar walaupun ada ENV liar di Jenkins
-        withEnv(['SONAR_PROJECT_KEY=babi','SONAR_PROJECT_NAME=babi']) {
+        withEnv(['SONAR_PROJECT_KEY=babi','SONAR_PROJECT_NAME=babi']) {   // safety belt
           withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN_RAW')]) {
+            // Jalankan isi step di BASH via heredoc supaya 'pipefail' valid
             sh '''
-              set -euo pipefail
+bash <<'BASH'
+set -Eeuo pipefail
 
-              # Trim newline
-              SONAR_TOKEN="$(printf %s "$SONAR_TOKEN_RAW" | tr -d '\\r\\n')"
+# Trim newline dari secret
+SONAR_TOKEN="$(printf %s "$SONAR_TOKEN_RAW" | tr -d '\\r\\n')"
 
-              echo "[assert] SONAR_PROJECT_KEY=$SONAR_PROJECT_KEY"
-              test "$SONAR_PROJECT_KEY" = "babi" || { echo "ProjectKey bukan 'babi'!"; exit 1; }
+echo "[assert] SONAR_PROJECT_KEY=$SONAR_PROJECT_KEY"
+test "$SONAR_PROJECT_KEY" = "babi" || { echo "ProjectKey bukan 'babi'!"; exit 1; }
 
-              echo "[preflight] Server reachable?"
-              docker run --rm --platform linux/arm64 --network "$DOCKER_NET" curlimages/curl:8.11.1 \
-                -sS -o /dev/null -w "HTTP %{http_code}\\n" "$SONAR_HOST_URL/api/server/version"
+echo "[preflight] Server reachable?"
+docker run --rm --platform linux/arm64 --network "$DOCKER_NET" curlimages/curl:8.11.1 \
+  -sS -o /dev/null -w "HTTP %{http_code}\\n" "$SONAR_HOST_URL/api/server/version"
 
-              echo "[preflight] Token valid?"
-              docker run --rm --platform linux/arm64 --network "$DOCKER_NET" -e SONAR_TOKEN="$SONAR_TOKEN" curlimages/curl:8.11.1 \
-                -sSf -u "$SONAR_TOKEN:" "$SONAR_HOST_URL/api/authentication/validate" | grep -q '"valid":true'
+echo "[preflight] Token valid?"
+docker run --rm --platform linux/arm64 --network "$DOCKER_NET" -e SONAR_TOKEN="$SONAR_TOKEN" curlimages/curl:8.11.1 \
+  -sSf -u "$SONAR_TOKEN:" "$SONAR_HOST_URL/api/authentication/validate" | grep -q '"valid":true'
 
-              echo "[preflight] Token bisa akses project 'babi'?"
-              docker run --rm --platform linux/arm64 --network "$DOCKER_NET" -e SONAR_TOKEN="$SONAR_TOKEN" curlimages/curl:8.11.1 \
-                -sSf -u "$SONAR_TOKEN:" "$SONAR_HOST_URL/api/projects/search?projects=$SONAR_PROJECT_KEY" \
-                | grep -q '"key":"babi"' || { echo "Token TIDAK bisa akses 'babi'"; exit 1; }
+echo "[preflight] Token bisa akses project 'babi'?"
+docker run --rm --platform linux/arm64 --network "$DOCKER_NET" -e SONAR_TOKEN="$SONAR_TOKEN" curlimages/curl:8.11.1 \
+  -sSf -u "$SONAR_TOKEN:" "$SONAR_HOST_URL/api/projects/search?projects=$SONAR_PROJECT_KEY" \
+  | grep -q '"key":"babi"' || { echo "Token TIDAK bisa akses 'babi'"; exit 1; }
 
-              echo "[scan] Pull scanner arm64…"
-              docker pull --platform linux/arm64 sonarsource/sonar-scanner-cli:7.2.0.5079
+echo "[scan] Pull scanner arm64…"
+docker pull --platform linux/arm64 sonarsource/sonar-scanner-cli:7.2.0.5079
 
-              echo "[scan] Run sonar-scanner…"
-              docker run --rm --platform linux/arm64 --network "$DOCKER_NET" \
-                -v "$WORKSPACE:/usr/src" -w /usr/src \
-                -v "$WORKSPACE/.sonar-cache:/root/.sonar/cache" \
-                sonarsource/sonar-scanner-cli:7.2.0.5079 \
-                  -X \
-                  -Dsonar.host.url="$SONAR_HOST_URL" \
-                  -Dsonar.token="$SONAR_TOKEN" \
-                  -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
-                  -Dsonar.projectName="$SONAR_PROJECT_NAME" \
-                  -Dsonar.sources=. \
-                  -Dsonar.inclusions="**/*" \
-                  -Dsonar.exclusions="**/log/**,**/log4/**,**/log_3/**,**/*.test.*,**/node_modules/**,**/dist/**,**/build/**,docker-compose.yaml" \
-                  -Dsonar.coverage.exclusions="**/*.test.*,**/test/**,**/tests**"
+echo "[scan] Run sonar-scanner…"
+docker run --rm --platform linux/arm64 --network "$DOCKER_NET" \
+  -v "$WORKSPACE:/usr/src" -w /usr/src \
+  -v "$WORKSPACE/.sonar-cache:/root/.sonar/cache" \
+  sonarsource/sonar-scanner-cli:7.2.0.5079 \
+    -X \
+    -Dsonar.host.url="$SONAR_HOST_URL" \
+    -Dsonar.token="$SONAR_TOKEN" \
+    -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+    -Dsonar.projectName="$SONAR_PROJECT_NAME" \
+    -Dsonar.sources=. \
+    -Dsonar.inclusions="**/*" \
+    -Dsonar.exclusions="**/log/**,**/log4/**,**/log_3/**,**/*.test.*,**/node_modules/**,**/dist/**,**/build/**,docker-compose.yaml" \
+    -Dsonar.coverage.exclusions="**/*.test.*,**/test/**,**/tests**"
+BASH
             '''
           }
         }
@@ -118,37 +119,41 @@ pipeline {
       steps {
         withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN_RAW')]) {
           sh '''
-            set -euo pipefail
-            SONAR_TOKEN="$(printf %s "$SONAR_TOKEN_RAW" | tr -d '\\r\\n')"
+bash <<'BASH'
+set -Eeuo pipefail
 
-            TASK_FILE=".scannerwork/report-task.txt"
-            test -f "$TASK_FILE"
-            CE_TASK_ID="$(grep -E '^ceTaskId=' "$TASK_FILE" | cut -d= -f2)"
-            if [ -z "${CE_TASK_ID:-}" ]; then
-              CE_TASK_ID="$(grep -E '^ceTaskUrl=' "$TASK_FILE" | sed -n 's/.*id=\\([^&]*\\).*/\\1/p')"
-            fi
-            echo "[gate] Background task: $CE_TASK_ID"
+SONAR_TOKEN="$(printf %s "$SONAR_TOKEN_RAW" | tr -d '\\r\\n')"
 
-            for i in $(seq 1 120); do
-              RESP="$(docker run --rm --platform linux/arm64 --network "$DOCKER_NET" curlimages/curl:8.11.1 \
-                        -sSf -u "$SONAR_TOKEN:" "$SONAR_HOST_URL/api/ce/task?id=$CE_TASK_ID" || true)"
-              STATUS="$(printf '%s' "$RESP" | sed -n 's/.*"status":"\\([^"]*\\)".*/\\1/p')"
-              echo "[gate] CE status: ${STATUS:-unknown} ($i/120)"
-              case "$STATUS" in
-                SUCCESS|FAILED|CANCELED) break ;;
-              esac
-              sleep 3
-            done
+TASK_FILE=".scannerwork/report-task.txt"
+test -f "$TASK_FILE"
 
-            [ "$STATUS" = "SUCCESS" ] || { echo "[gate] CE status: $STATUS"; exit 1; }
+CE_TASK_ID="$(grep -E '^ceTaskId=' "$TASK_FILE" | cut -d= -f2)"
+if [ -z "${CE_TASK_ID:-}" ]; then
+  CE_TASK_ID="$(grep -E '^ceTaskUrl=' "$TASK_FILE" | sed -n 's/.*id=\\([^&]*\\).*/\\1/p')"
+fi
+echo "[gate] Background task: $CE_TASK_ID"
 
-            QG="$(docker run --rm --platform linux/arm64 --network "$DOCKER_NET" curlimages/curl:8.11.1 \
-                  -sSf -u "$SONAR_TOKEN:" \
-                  "$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY")"
-            printf '%s\n' "$QG" > quality-gate.json
-            QSTATUS="$(printf '%s' "$QG" | sed -n 's/.*"status":"\\([^"]*\\)".*/\\1/p')"
-            echo "[gate] Quality Gate: $QSTATUS"
-            [ "$QSTATUS" = "OK" ] || { echo "Quality Gate failed: $QSTATUS"; exit 1; }
+for i in $(seq 1 120); do
+  RESP="$(docker run --rm --platform linux/arm64 --network "$DOCKER_NET" curlimages/curl:8.11.1 \
+            -sSf -u "$SONAR_TOKEN:" "$SONAR_HOST_URL/api/ce/task?id=$CE_TASK_ID" || true)"
+  STATUS="$(printf '%s' "$RESP" | sed -n 's/.*"status":"\\([^"]*\\)".*/\\1/p')"
+  echo "[gate] CE status: ${STATUS:-unknown} ($i/120)"
+  case "$STATUS" in
+    SUCCESS|FAILED|CANCELED) break ;;
+  esac
+  sleep 3
+done
+
+[ "$STATUS" = "SUCCESS" ] || { echo "[gate] CE status: $STATUS"; exit 1; }
+
+QG="$(docker run --rm --platform linux/arm64 --network "$DOCKER_NET" curlimages/curl:8.11.1 \
+      -sSf -u "$SONAR_TOKEN:" \
+      "$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY")"
+printf '%s\n' "$QG" > quality-gate.json
+QSTATUS="$(printf '%s' "$QG" | sed -n 's/.*"status":"\\([^"]*\\)".*/\\1/p')"
+echo "[gate] Quality Gate: $QSTATUS"
+[ "$QSTATUS" = "OK" ] || { echo "Quality Gate failed: $QSTATUS"; exit 1; }
+BASH
           '''
           archiveArtifacts artifacts: 'quality-gate.json', fingerprint: true
         }
