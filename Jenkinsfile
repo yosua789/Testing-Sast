@@ -4,8 +4,6 @@ pipeline {
 
   environment {
     FAIL_ON_ISSUES     = 'false'
-
-    // SonarQube
     SONAR_HOST_URL     = 'http://sonarqube:9000'
     SONAR_PROJECT_KEY  = 'babi'
     SONAR_PROJECT_NAME = 'babi'
