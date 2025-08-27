@@ -5,7 +5,7 @@ pipeline {
   environment {
     FAIL_ON_ISSUES     = 'false'
     SONAR_HOST_URL     = 'http://sonarqube:9000'
-    SONAR_PROJECT_KEY  = 'babi'
+    SONAR_PROJECT_KEY  = 'sonarqube-token'
     SONAR_PROJECT_NAME = 'babi'
     DOCKER_NET         = 'jenkins'   // docker network where SonarQube is reachable
   }
