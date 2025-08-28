@@ -27,7 +27,7 @@ pipeline {
       }
     }
 
-    // ===== Preflight: cek token & project (HARUS 200) =====
+    // ===== Preflight: cek token & project =====
     stage('Sonar token preflight') {
       steps {
         withCredentials([string(credentialsId: 'sonarqube-token', variable: 'T')]) {
@@ -36,13 +36,13 @@ pipeline {
             echo -n "$T" | wc -c | awk '{print "Token length:", $1}'
             echo -n "$T" | sha256sum | awk '{print "SHA256(JenkinsCred)="$1}'
 
-            # versi API v2 -> harus keluar angka (200)
+            # versi API v2 -> harus 200 dan keluar angka
             docker run --rm --network jenkins curlimages/curl -fsS \
               -H "Authorization: Bearer $T" \
               "$SONAR_HOST_URL/api/v2/analysis/version" \
               | xargs echo "APIv2 version:"
 
-            # cari project -> harus 200 dan mengandung key
+            # cari project -> harus ketemu
             docker run --rm --network jenkins curlimages/curl -fsS \
               -H "Authorization: Bearer $T" \
               "$SONAR_HOST_URL/api/projects/search?projects=$SONAR_PROJECT_KEY" \
@@ -120,7 +120,11 @@ pipeline {
               archiveArtifacts artifacts: 'dependency-check-report/dependency-check.log', fingerprint: true
             }
             if (fileExists('dependency-check-report/dependency-check-report.html')) {
-              publishHTML(target: [reportDir: 'dependency-check-report', reportFiles: 'dependency-check-report.html', reportName: 'Dependency-Check Report'])
+              publishHTML(target: [
+                reportDir: 'dependency-check-report',
+                reportFiles: 'dependency-check-report.html',
+                reportName: 'Dependency-Check Report'
+              ])
             } else {
               echo "Dependency-Check HTML report not found"
             }
@@ -154,8 +158,10 @@ pipeline {
       }
       post {
         always {
-          if (fileExists('trivy-fs.txt'))   { archiveArtifacts artifacts: 'trivy-fs.txt', fingerprint: true }
-          if (fileExists('trivy-fs.sarif')) { archiveArtifacts artifacts: 'trivy-fs.sarif', fingerprint: true }
+          script {
+            if (fileExists('trivy-fs.txt'))   { archiveArtifacts artifacts: 'trivy-fs.txt', fingerprint: true }
+            if (fileExists('trivy-fs.sarif')) { archiveArtifacts artifacts: 'trivy-fs.sarif', fingerprint: true }
+          }
         }
       }
     }
