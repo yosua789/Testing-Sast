@@ -5,16 +5,14 @@ pipeline {
   environment {
     FAIL_ON_ISSUES     = 'false'
 
-    // SonarQube
+    // --- Sonarqube Host ---
     SONAR_HOST_URL     = 'http://sonarqube:9000'
-    SONAR_PROJECT_KEY  = 'coba'          // <-- samakan dgn project di SonarQube
+    SONAR_PROJECT_KEY  = 'coba'          
     SONAR_PROJECT_NAME = 'coba'
   }
 
   stages {
-    stage('Clean Workspace') {
-      steps { cleanWs() }
-    }
+    stage('Clean Workspace') { steps { cleanWs() } }
 
     stage('Checkout') {
       steps {
@@ -27,42 +25,57 @@ pipeline {
       }
     }
 
+    // ----------- NEW: pre-check supaya ketahuan kenapa 401/403 -----------
+    stage('DEBUG Sonar access') {
+      steps {
+        withCredentials([string(credentialsId: 'sonarqube-token', variable: 'T')]) {
+          sh '''
+            set -eux
+            echo "Token length: $(printf %s "$T" | wc -c)"
+
+            echo "[1] validate token -> harus {\"valid\":true}"
+            docker run --rm --network jenkins curlimages/curl -fsS -u "$T:" \
+              "$SONAR_HOST_URL/api/authentication/validate"; echo
+
+            echo "[2] server analysis API version -> harus angka (mis. 3)."
+            # kalau di sini 401, artinya token TIDAK punya global 'Execute Analysis'
+            docker run --rm --network jenkins curlimages/curl -fsS -u "$T:" \
+              "$SONAR_HOST_URL/api/v2/analysis/version"; echo
+
+            echo "[3] cek project (optional, hanya untuk lihat 403 browse)"
+            docker run --rm --network jenkins curlimages/curl -fsS -u "$T:" \
+              "$SONAR_HOST_URL/api/projects/search?projects=$SONAR_PROJECT_KEY" || true
+          '''
+        }
+      }
+    }
+
     // === SAST: SonarQube (scan source code) ===
     stage('SAST - SonarQube') {
-  steps {
-    withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
-      sh '''
-        set -eux
+      steps {
+        withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
+          sh '''
+            set -eux
+            # Pakai image official. (Di Apple Silicon akan ada warning amd64, aman.)
+            docker pull sonarsource/sonar-scanner-cli
 
-        # 0) Sanity check: token panjangnya berapa (hindari token kosong / newline)
-        echo -n "$(printf %s "$SONAR_TOKEN")" | wc -c | awk '{print "TOKEN_LENGTH="$0}'
-
-        # 1) Cek konektivitas + autentikasi ke endpoint yg dipakai scanner
-        docker run --rm --network jenkins curlimages/curl -fsS -u "$(printf %s "$SONAR_TOKEN"):" \
-          "$SONAR_HOST_URL/api/v2/analysis/version" | sed 's/.*/[OK] analysis.version reachable/'
-
-        # 2) Jalankan scanner.
-        #    - TIDAK pakai --platform (biarin warning amd64 vs arm64)
-        #    - Pass token via ENV SONAR_TOKEN juga (selain -Dsonar.token) supaya pasti kebaca.
-        docker pull sonarsource/sonar-scanner-cli
-
-        docker run --rm --network jenkins \
-          -e SONAR_TOKEN="$(printf %s "$SONAR_TOKEN")" \
-          -e SONAR_HOST_URL="$SONAR_HOST_URL" \
-          -v "$WORKSPACE:/usr/src" \
-          sonarsource/sonar-scanner-cli \
-            -Dsonar.host.url="$SONAR_HOST_URL" \
-            -Dsonar.token="$(printf %s "$SONAR_TOKEN")" \
-            -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
-            -Dsonar.projectName="$SONAR_PROJECT_NAME" \
-            -Dsonar.sources=. \
-            -Dsonar.inclusions="**/*" \
-            -Dsonar.exclusions="**/log/**,**/log4/**,**/log_3/**,**/*.test.*,**/node_modules/**,**/dist/**,**/build/**,docker-compose.yaml" \
-            -Dsonar.coverage.exclusions="**/*.test.*,**/test/**,**/tests**"
-      '''
+            docker run --rm --network jenkins \
+              -e SONAR_HOST_URL="$SONAR_HOST_URL" \
+              -e SONAR_TOKEN="$SONAR_TOKEN" \
+              -v "$WORKSPACE:/usr/src" \
+              sonarsource/sonar-scanner-cli \
+                -Dsonar.host.url="$SONAR_HOST_URL" \
+                -Dsonar.token="$SONAR_TOKEN" \
+                -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+                -Dsonar.projectName="$SONAR_PROJECT_NAME" \
+                -Dsonar.sources=. \
+                -Dsonar.inclusions="**/*" \
+                -Dsonar.exclusions="**/log/**,**/log4/**,**/log_3/**,**/*.test.*,**/node_modules/**,**/dist/**,**/build/**,docker-compose.yaml" \
+                -Dsonar.coverage.exclusions="**/*.test.*,**/test/**,**/tests**"
+          '''
+        }
+      }
     }
-  }
-}
 
     // === SCA: OWASP Dependency-Check ===
     stage('SCA - Dependency-Check (repo)') {
