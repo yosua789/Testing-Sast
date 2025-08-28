@@ -5,14 +5,16 @@ pipeline {
   environment {
     FAIL_ON_ISSUES     = 'false'
 
-    // --- Sonarqube Host ---
+    // SonarQube
     SONAR_HOST_URL     = 'http://sonarqube:9000'
-    SONAR_PROJECT_KEY  = 'coba'          
+    SONAR_PROJECT_KEY  = 'coba' 
     SONAR_PROJECT_NAME = 'coba'
   }
 
   stages {
-    stage('Clean Workspace') { steps { cleanWs() } }
+    stage('Clean Workspace') {
+      steps { cleanWs() }
+    }
 
     stage('Checkout') {
       steps {
@@ -25,54 +27,42 @@ pipeline {
       }
     }
 
-    // ----------- NEW: pre-check supaya ketahuan kenapa 401/403 -----------
-    stage('DEBUG Sonar access') {
-      steps {
-        withCredentials([string(credentialsId: 'sonarqube-token', variable: 'T')]) {
-          sh '''
-            set -eux
-            echo "Token length: $(printf %s "$T" | wc -c)"
-
-            echo "[1] validate token -> harus {\"valid\":true}"
-            docker run --rm --network jenkins curlimages/curl -fsS -u "$T:" \
-              "$SONAR_HOST_URL/api/authentication/validate"; echo
-
-            echo "[2] server analysis API version -> harus angka (mis. 3)."
-            # kalau di sini 401, artinya token TIDAK punya global 'Execute Analysis'
-            docker run --rm --network jenkins curlimages/curl -fsS -u "$T:" \
-              "$SONAR_HOST_URL/api/v2/analysis/version"; echo
-
-            echo "[3] cek project (optional, hanya untuk lihat 403 browse)"
-            docker run --rm --network jenkins curlimages/curl -fsS -u "$T:" \
-              "$SONAR_HOST_URL/api/projects/search?projects=$SONAR_PROJECT_KEY" || true
-          '''
-        }
-      }
-    }
-
     // === SAST: SonarQube (scan source code) ===
     stage('SAST - SonarQube') {
       steps {
+        // Use USER token (squ_...) stored as secret text credential "sonarqube-token"
         withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
-          sh '''
-            set -eux
-            # Pakai image official. (Di Apple Silicon akan ada warning amd64, aman.)
-            docker pull sonarsource/sonar-scanner-cli
+          catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+            sh '''
+              set -eux
 
-            docker run --rm --network jenkins \
-              -e SONAR_HOST_URL="$SONAR_HOST_URL" \
-              -e SONAR_TOKEN="$SONAR_TOKEN" \
-              -v "$WORKSPACE:/usr/src" \
-              sonarsource/sonar-scanner-cli \
-                -Dsonar.host.url="$SONAR_HOST_URL" \
-                -Dsonar.token="$SONAR_TOKEN" \
-                -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
-                -Dsonar.projectName="$SONAR_PROJECT_NAME" \
-                -Dsonar.sources=. \
-                -Dsonar.inclusions="**/*" \
-                -Dsonar.exclusions="**/log/**,**/log4/**,**/log_3/**,**/*.test.*,**/node_modules/**,**/dist/**,**/build/**,docker-compose.yaml" \
-                -Dsonar.coverage.exclusions="**/*.test.*,**/test/**,**/tests**"
-          '''
+              # Quick preflight: Bearer auth + version endpoint should 200
+              docker run --rm --network jenkins curlimages/curl -fsS \
+                -H "Authorization: Bearer $SONAR_TOKEN" \
+                "$SONAR_HOST_URL/api/v2/analysis/version" \
+                | sed -e 's/.*/SonarQube analysis API version: &/'
+
+              # Ensure project exists / visible with this token (total must be 1)
+              docker run --rm --network jenkins curlimages/curl -fsS \
+                -H "Authorization: Bearer $SONAR_TOKEN" \
+                "$SONAR_HOST_URL/api/projects/search?projects=$SONAR_PROJECT_KEY" \
+                | tee .sq_search.json
+              grep -q '"total":1' .sq_search.json
+
+              # Run scanner (amd64 image; Apple Silicon runs via emulation; warning is OK)
+              docker run --rm --network jenkins \
+                -v "$WORKSPACE:/usr/src" \
+                sonarsource/sonar-scanner-cli \
+                  -Dsonar.host.url="$SONAR_HOST_URL" \
+                  -Dsonar.token="$SONAR_TOKEN" \
+                  -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+                  -Dsonar.projectName="$SONAR_PROJECT_NAME" \
+                  -Dsonar.sources=. \
+                  -Dsonar.inclusions="**/*" \
+                  -Dsonar.exclusions="**/log/**,**/log4/**,**/log_3/**,**/*.test.*,**/node_modules/**,**/dist/**,**/build/**,docker-compose.yaml" \
+                  -Dsonar.coverage.exclusions="**/*.test.*,**/test/**,**/tests**"
+            '''
+          }
         }
       }
     }
@@ -95,7 +85,7 @@ pipeline {
               /usr/share/dependency-check/bin/dependency-check.sh --updateonly || true
               set +e
               /usr/share/dependency-check/bin/dependency-check.sh \
-                --project "Testing-Sast" \
+                --project "$SONAR_PROJECT_NAME" \
                 --scan . \
                 --format ALL \
                 --out dependency-check-report \
@@ -133,7 +123,7 @@ pipeline {
         docker {
           image 'aquasec/trivy:latest'
           reuseNode true
-          args "--entrypoint= -v $WORKSPACE/.trivy-cache:/root/.cache/trivy"
+          args '--entrypoint="" -v $WORKSPACE/.trivy-cache:/root/.cache/trivy'
         }
       }
       steps {
