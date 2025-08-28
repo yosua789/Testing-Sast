@@ -27,35 +27,36 @@ pipeline {
       }
     }
 
-    // ===== PRECHECK: Token & project di SonarQube =====
+    // ===== PRECHECK: token & akses project =====
     stage('Sonar token preflight') {
       steps {
         withCredentials([string(credentialsId: 'sonarqube-token', variable: 'T')]) {
           sh '''
             set -eux
 
-            # Cek panjang token (untuk sanity check, tidak nge-print token)
+            # Sanity check: panjang token (nggak nge-print tokennya)
             echo -n "$T" | wc -c | awk '{print "Token length:", $1}'
 
-            # Wajib: header Authorization HARUS satu argumen (pakai tanda kutip)
+            # HARUS DIKUTIP -> header Bearer jangan sampai kepecah
             docker run --rm --network jenkins curlimages/curl -fsS \
               -H "Authorization: Bearer $T" \
               "$SONAR_HOST_URL/api/v2/analysis/version" \
               | xargs echo "APIv2 version:"
 
-            # Cek project ada & bisa diakses oleh token
+            # Cek project bisa diakses oleh token
             docker run --rm --network jenkins curlimages/curl -fsS \
               -H "Authorization: Bearer $T" \
               "$SONAR_HOST_URL/api/projects/search?projects=$SONAR_PROJECT_KEY" \
               | tee .sonar_project_search.json >/dev/null
 
-            grep -q "\"key\":\"$SONAR_PROJECT_KEY\"" .sonar_project_search.json
+            # grep pattern JSON: "key":"<PROJECT_KEY>"
+            grep -q "\\\"key\\\":\\\"$SONAR_PROJECT_KEY\\\"" .sonar_project_search.json
           '''
         }
       }
     }
 
-    // ===== SAST: SonarQube (scan source code) =====
+    // ===== SAST: SonarQube =====
     stage('SAST - SonarQube') {
       steps {
         withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
@@ -63,7 +64,7 @@ pipeline {
             set -eux
             docker pull sonarsource/sonar-scanner-cli
 
-            # Pakai ENV SONAR_TOKEN (biar nggak double dan nggak ada warning override)
+            # Pakai ENV SONAR_TOKEN & SONAR_HOST_URL (biar clean, no double -Dsonar.token)
             docker run --rm --network jenkins \
               -e SONAR_HOST_URL="$SONAR_HOST_URL" \
               -e SONAR_TOKEN="$SONAR_TOKEN" \
@@ -190,7 +191,7 @@ pipeline {
                 .
               EC1=$?
 
-              # Run 2: JUnit (pakai -o; --junit-xml-file memang tidak ada)
+              # Run 2: JUnit (pakai -o untuk file JUnit)
               semgrep scan \
                 --config p/ci --config p/owasp-top-ten --config p/docker \
                 --exclude 'log/**' --exclude '**/node_modules/**' --exclude '**/dist/**' --exclude '**/build/**' \
