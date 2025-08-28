@@ -7,7 +7,7 @@ pipeline {
 
     // SonarQube
     SONAR_HOST_URL     = 'http://sonarqube:9000'
-    SONAR_PROJECT_KEY  = 'coba'   
+    SONAR_PROJECT_KEY  = 'coba'
     SONAR_PROJECT_NAME = 'coba'
   }
 
@@ -33,16 +33,9 @@ pipeline {
         withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
           sh '''
             set -e
-            echo "[sonar] host=$SONAR_HOST_URL key=$SONAR_PROJECT_KEY"
-
-            # --- sanity check token & konektivitas (bikin gampang debug 401/403)
-            printf "[sonar] token length=%s\\n" "$(printf %s "$SONAR_TOKEN" | wc -c)"
-            docker run --rm --network jenkins curlimages/curl -fsS -u "$SONAR_TOKEN:" \
-              "$SONAR_HOST_URL/api/authentication/validate" || true
-
-            # --- run scanner (arm64 utk Mac M-series)
-            docker pull --platform linux/arm64 sonarsource/sonar-scanner-cli
-            docker run --rm --platform linux/arm64 --network jenkins \
+            # NOTE: image sonar-scanner TIDAK punya arm64 -> pakai amd64
+            docker pull --platform linux/amd64 sonarsource/sonar-scanner-cli
+            docker run --rm --platform linux/amd64 --network jenkins \
               -v "$WORKSPACE:/usr/src" \
               sonarsource/sonar-scanner-cli \
                 -Dsonar.host.url="$SONAR_HOST_URL" \
