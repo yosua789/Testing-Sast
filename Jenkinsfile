@@ -5,14 +5,13 @@ pipeline {
   environment {
     FAIL_ON_ISSUES     = 'false'
 
-    // ==== SonarQube ====
+    // SonarQube
     SONAR_HOST_URL     = 'http://sonarqube:9000'
     SONAR_PROJECT_KEY  = 'coba'
     SONAR_PROJECT_NAME = 'coba'
   }
 
   stages {
-
     stage('Clean Workspace') {
       steps { cleanWs() }
     }
@@ -28,43 +27,46 @@ pipeline {
       }
     }
 
-    // --- Sanity check Sonar token (Bearer) + project ada ---
+    // ===== Preflight: cek token & project (HARUS 200) =====
     stage('Sonar token preflight') {
       steps {
         withCredentials([string(credentialsId: 'sonarqube-token', variable: 'T')]) {
           sh '''
             set -eux
-            # pastikan T itu USER TOKEN (prefix squ_) dan berlaku sebagai Bearer
-            docker run --rm --network jenkins curlimages/curl -fsS \
-              -H "Authorization: Bearer $T" "$SONAR_HOST_URL/api/v2/analysis/version" \
-              | awk '{print "[OK] Sonar API v2 version:", $0}'
+            echo -n "$T" | wc -c | awk '{print "Token length:", $1}'
+            echo -n "$T" | sha256sum | awk '{print "SHA256(JenkinsCred)="$1}'
 
-            # cek project exists (boleh 0/1, cuma buat verifikasi akses)
+            # versi API v2 -> harus keluar angka (200)
+            docker run --rm --network jenkins curlimages/curl -fsS \
+              -H "Authorization: Bearer $T" \
+              "$SONAR_HOST_URL/api/v2/analysis/version" \
+              | xargs echo "APIv2 version:"
+
+            # cari project -> harus 200 dan mengandung key
             docker run --rm --network jenkins curlimages/curl -fsS \
               -H "Authorization: Bearer $T" \
               "$SONAR_HOST_URL/api/projects/search?projects=$SONAR_PROJECT_KEY" \
               | tee .sonar_project_search.json >/dev/null
+            grep -q '"key":"'$SONAR_PROJECT_KEY'"' .sonar_project_search.json
           '''
         }
       }
     }
 
-    // === SAST: SonarQube ===
+    // ===== SAST: SonarQube =====
     stage('SAST - SonarQube') {
       steps {
         withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
           sh '''
             set -eux
-            docker pull sonarsource/sonar-scanner-cli || true
+            docker pull sonarsource/sonar-scanner-cli
 
-            # Jalankan scanner (token dipass; image akan handle auth)
             docker run --rm --network jenkins \
               -e SONAR_HOST_URL="$SONAR_HOST_URL" \
               -e SONAR_TOKEN="$SONAR_TOKEN" \
               -v "$WORKSPACE:/usr/src" \
               sonarsource/sonar-scanner-cli \
                 -Dsonar.host.url="$SONAR_HOST_URL" \
-                -Dsonar.token="$SONAR_TOKEN" \
                 -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
                 -Dsonar.projectName="$SONAR_PROJECT_NAME" \
                 -Dsonar.sources=. \
@@ -76,7 +78,7 @@ pipeline {
       }
     }
 
-    // === SCA: OWASP Dependency-Check ===
+    // ===== SCA: OWASP Dependency-Check =====
     stage('SCA - Dependency-Check (repo)') {
       agent {
         docker {
@@ -87,25 +89,26 @@ pipeline {
       }
       steps {
         catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+          sh '''
+            set -e
+            mkdir -p dependency-check-report
+            /usr/share/dependency-check/bin/dependency-check.sh --updateonly || true
+
+            set +e
+            /usr/share/dependency-check/bin/dependency-check.sh \
+              --project "Testing-Sast" \
+              --scan . \
+              --format ALL \
+              --out dependency-check-report \
+              --log dependency-check-report/dependency-check.log \
+              --failOnCVSS 11
+            echo $? > .dc_exit
+          '''
           script {
-            sh '''
-              set -e
-              mkdir -p dependency-check-report
-              /usr/share/dependency-check/bin/dependency-check.sh --updateonly || true
-              set +e
-              /usr/share/dependency-check/bin/dependency-check.sh \
-                --project "Testing-Sast" \
-                --scan . \
-                --format ALL \
-                --out dependency-check-report \
-                --log dependency-check-report/dependency-check.log \
-                --failOnCVSS 11
-              echo $? > .dc_exit
-            '''
             def rc = readFile('.dc_exit').trim()
             echo "Dependency-Check exit code: ${rc}"
             if (env.FAIL_ON_ISSUES == 'true' && rc != '0') {
-              error "Fail build (policy) Dependency-Check exit ${rc}"
+              error "Fail build (policy) DC exit ${rc}"
             }
           }
         }
@@ -126,7 +129,7 @@ pipeline {
       }
     }
 
-    // === SCA: Trivy (filesystem) ===
+    // ===== SCA: Trivy FS =====
     stage('SCA - Trivy (filesystem)') {
       agent {
         docker {
@@ -137,32 +140,27 @@ pipeline {
       }
       steps {
         catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+          sh '''
+            set +e
+            rm -f trivy-fs.txt trivy-fs.sarif || true
+            trivy fs --no-progress --exit-code 0 --severity HIGH,CRITICAL . | tee trivy-fs.txt
+            trivy fs --no-progress --exit-code 0 --severity HIGH,CRITICAL --format sarif -o trivy-fs.sarif .
+            echo $? > .trivy_exit
+          '''
           script {
-            sh 'rm -f trivy-fs.txt trivy-fs.sarif || true'
-            def ec = sh(returnStatus: true, script: '''
-              set +e
-              trivy fs --no-progress --exit-code 0 --severity HIGH,CRITICAL . | tee trivy-fs.txt
-              trivy fs --no-progress --exit-code 0 --severity HIGH,CRITICAL --format sarif -o trivy-fs.sarif .
-            ''')
-            echo "Trivy FS scan exit code: ${ec}"
-            if (env.FAIL_ON_ISSUES == 'true' && ec != 0) {
-              error "Fail build (policy) if Trivy FS exit ${ec}"
-            }
-            sh 'ls -lh trivy-fs.* || true'
+            echo "Trivy FS scan exit code: " + readFile('.trivy_exit').trim()
           }
         }
       }
       post {
         always {
-          script {
-            if (fileExists('trivy-fs.txt'))   { archiveArtifacts artifacts: 'trivy-fs.txt', fingerprint: true }
-            if (fileExists('trivy-fs.sarif')) { archiveArtifacts artifacts: 'trivy-fs.sarif', fingerprint: true }
-          }
+          if (fileExists('trivy-fs.txt'))   { archiveArtifacts artifacts: 'trivy-fs.txt', fingerprint: true }
+          if (fileExists('trivy-fs.sarif')) { archiveArtifacts artifacts: 'trivy-fs.sarif', fingerprint: true }
         }
       }
     }
 
-    // === SAST: Semgrep ===
+    // ===== SAST: Semgrep (SARIF & JUnit) =====
     stage('SAST - Semgrep') {
       agent {
         docker {
@@ -173,31 +171,37 @@ pipeline {
       }
       steps {
         catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+          sh '''
+            set +e
+            semgrep --version || true
+
+            # Run 1: SARIF
+            semgrep scan \
+              --config p/ci --config p/owasp-top-ten --config p/docker \
+              --exclude 'log/**' --exclude '**/node_modules/**' --exclude '**/dist/**' --exclude '**/build/**' \
+              --sarif --output semgrep.sarif \
+              --severity error --error
+            EC1=$?
+
+            # Run 2: JUnit XML
+            semgrep scan \
+              --config p/ci --config p/owasp-top-ten --config p/docker \
+              --exclude 'log/**' --exclude '**/node_modules/**' --exclude '**/dist/**' --exclude '**/build/**' \
+              --junit-xml --output semgrep-junit.xml \
+              --severity error --error
+            EC2=$?
+
+            echo $EC1 > .semgrep_ec1
+            echo $EC2 > .semgrep_ec2
+
+            ls -lh semgrep.* || true
+          '''
           script {
-            sh '''
-              set +e
-              # 1) Output SARIF
-              semgrep scan \
-                --config p/ci --config p/owasp-top-ten --config p/docker \
-                --exclude 'log/**' --exclude '**/node_modules/**' --exclude '**/dist/**' --exclude '**/build/**' \
-                --severity ERROR --error \
-                --sarif -o semgrep.sarif
-              EC1=$?
-
-              # 2) Output JUnit XML (tanpa --junit-xml-file)
-              semgrep scan \
-                --config p/ci --config p/owasp-top-ten --config p/docker \
-                --exclude 'log/**' --exclude '**/node_modules/**' --exclude '**/dist/**' --exclude '**/build/**' \
-                --severity ERROR --error \
-                --junit-xml -o semgrep-junit.xml
-              EC2=$?
-
-              if [ $EC1 -ne 0 ] || [ $EC2 -ne 0 ]; then echo 1 > .semgrep_exit; else echo 0 > .semgrep_exit; fi
-            '''
-            def ec = readFile('.semgrep_exit').trim()
-            sh 'ls -lh semgrep.sarif semgrep-junit.xml || true'
-            if (env.FAIL_ON_ISSUES == 'true' && ec != '0') {
-              error "Fail build (policy) Semgrep exit ${ec}"
+            def ec1 = readFile('.semgrep_ec1').trim()
+            def ec2 = readFile('.semgrep_ec2').trim()
+            echo "Semgrep exit codes: SARIF=${ec1}, JUNIT=${ec2}"
+            if (env.FAIL_ON_ISSUES == 'true' && (ec1 != '0' || ec2 != '0')) {
+              error "Fail build (policy) Semgrep exit SARIF=${ec1} JUNIT=${ec2}"
             }
           }
         }
@@ -213,8 +217,8 @@ pipeline {
   post {
     always {
       script {
-        if (fileExists('semgrep.sarif'))   { recordIssues(enabledForFailure: true, tools: [sarif(pattern: 'semgrep.sarif',   id: 'Semgrep')]) }
-        if (fileExists('trivy-fs.sarif'))  { recordIssues(enabledForFailure: true, tools: [sarif(pattern: 'trivy-fs.sarif', id: 'Trivy FS')]) }
+        if (fileExists('semgrep.sarif'))  { recordIssues(enabledForFailure: true, tools: [sarif(pattern: 'semgrep.sarif',  id: 'Semgrep')]) }
+        if (fileExists('trivy-fs.sarif')) { recordIssues(enabledForFailure: true, tools: [sarif(pattern: 'trivy-fs.sarif', id: 'Trivy FS')]) }
         if (fileExists('semgrep-junit.xml')) {
           junit allowEmptyResults: false, testResults: 'semgrep-junit.xml'
         } else {
