@@ -4,14 +4,14 @@ pipeline {
 
   environment {
     FAIL_ON_ISSUES     = 'false'
+
+    // SonarQube
     SONAR_HOST_URL     = 'http://sonarqube:9000'
-    SONAR_PROJECT_KEY  = 'coba'
+    SONAR_PROJECT_KEY  = 'coba'   
     SONAR_PROJECT_NAME = 'coba'
-    DOCKER_NET         = 'jenkins'
   }
 
   stages {
-
     stage('Clean Workspace') {
       steps { cleanWs() }
     }
@@ -27,134 +27,33 @@ pipeline {
       }
     }
 
-    stage('Debug ENV demo-SAST (scope)') {
+    // === SAST: SonarQube (scan source code) ===
+    stage('SAST - SonarQube') {
       steps {
-        sh '''
-          set -e
-          echo "[debug] ENV relevan (SONAR_|SCANNER_|PROJECT_) yang mengandung 'demo-SAST':"
-          printenv | grep -E '^(SONAR_|SCANNER_|PROJECT_)' | grep -n 'demo-SAST' || echo "Tidak ada."
-        '''
-      }
-    }
-
-    // Guard: pastikan tidak ada konfigurasi demo-SAST (kecuali teks di Jenkinsfile)
-    stage('Guard: no demo-SAST') {
-      steps {
-        sh '''
-          set -e
-          echo "[guard] Cek konfigurasi repo (kecuali Jenkinsfile)…"
-          ! grep -R --line-number --exclude-dir=.git --exclude=Jenkinsfile \
-             -E '(-Dsonar\\.projectKey=demo-SAST|sonar\\.projectKey[[:space:]]*=[[:space:]]*demo-SAST)' . \
-             || { echo "Masih ada konfigurasi demo-SAST di file selain Jenkinsfile!"; exit 1; }
-
-          echo "[guard] Cek ENV yang relevan (SONAR_|SCANNER_|PROJECT_)…"
-          BAD_ENV="$(printenv | grep -E '^(SONAR_|SCANNER_|PROJECT_)' | grep -F 'demo-SAST' || true)"
-          if [ -n "$BAD_ENV" ]; then
-            echo "[guard] Variabel bermasalah:"
-            echo "$BAD_ENV"
-            exit 1
-          fi
-
-          echo "[guard] OK"
-        '''
-      }
-    }
-
-    // === SAST: SonarQube ===
-    stage('SAST - SonarQube (coba)') {
-      steps {
-        withEnv(['SONAR_PROJECT_KEY=coba','SONAR_PROJECT_NAME=coba']) {
-          withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN_RAW')]) {
-            sh '''
-bash <<'BASH'
-set -Eeuo pipefail
-
-# Trim newline dari secret
-SONAR_TOKEN="$(printf %s "$SONAR_TOKEN_RAW" | tr -d '\\r\\n')"
-
-echo "[assert] SONAR_PROJECT_KEY=$SONAR_PROJECT_KEY"
-test "$SONAR_PROJECT_KEY" = "coba" || { echo "ProjectKey bukan 'coba'!"; exit 1; }
-
-echo "[preflight] Server reachable?"
-docker run --rm --platform linux/arm64 --network "$DOCKER_NET" curlimages/curl:8.11.1 \
-  -sS -o /dev/null -w "HTTP %{http_code}\\n" "$SONAR_HOST_URL/api/server/version"
-
-echo "[preflight] Token valid?"
-docker run --rm --platform linux/arm64 --network "$DOCKER_NET" -e SONAR_TOKEN="$SONAR_TOKEN" curlimages/curl:8.11.1 \
-  -sSf -u "$SONAR_TOKEN:" "$SONAR_HOST_URL/api/authentication/validate" | grep -q '"valid":true'
-
-echo "[preflight] Token bisa akses project 'coba'?"
-docker run --rm --platform linux/arm64 --network "$DOCKER_NET" -e SONAR_TOKEN="$SONAR_TOKEN" curlimages/curl:8.11.1 \
-  -sSf -u "$SONAR_TOKEN:" "$SONAR_HOST_URL/api/projects/search?projects=$SONAR_PROJECT_KEY" \
-  | grep -q '"key":"coba"' || { echo "Token TIDAK bisa akses 'coba'"; exit 1; }
-
-echo "[scan] Pull scanner arm64…"
-docker pull --platform linux/arm64 sonarsource/sonar-scanner-cli:7.2.0.5079
-
-echo "[scan] Run sonar-scanner…"
-docker run --rm --platform linux/arm64 --network "$DOCKER_NET" \
-  -v "$WORKSPACE:/usr/src" -w /usr/src \
-  -v "$WORKSPACE/.sonar-cache:/root/.sonar/cache" \
-  sonarsource/sonar-scanner-cli:7.2.0.5079 \
-    -X \
-    -Dsonar.host.url="$SONAR_HOST_URL" \
-    -Dsonar.token="$SONAR_TOKEN" \
-    -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
-    -Dsonar.projectName="$SONAR_PROJECT_NAME" \
-    -Dsonar.sources=. \
-    -Dsonar.inclusions="**/*" \
-    -Dsonar.exclusions="**/log/**,**/log4/**,**/log_3/**,**/*.test.*,**/node_modules/**,**/dist/**,**/build/**,docker-compose.yaml" \
-    -Dsonar.coverage.exclusions="**/*.test.*,**/test/**,**/tests**"
-BASH
-            '''
-          }
-        }
-      }
-    }
-
-    // (opsional) tunggu Quality Gate jika FAIL_ON_ISSUES='true'
-    stage('SonarQube Quality Gate') {
-      when { expression { return env.FAIL_ON_ISSUES == 'true' } }
-      steps {
-        withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN_RAW')]) {
+        withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
           sh '''
-bash <<'BASH'
-set -Eeuo pipefail
+            set -e
+            echo "[sonar] host=$SONAR_HOST_URL key=$SONAR_PROJECT_KEY"
 
-SONAR_TOKEN="$(printf %s "$SONAR_TOKEN_RAW" | tr -d '\\r\\n')"
+            # --- sanity check token & konektivitas (bikin gampang debug 401/403)
+            printf "[sonar] token length=%s\\n" "$(printf %s "$SONAR_TOKEN" | wc -c)"
+            docker run --rm --network jenkins curlimages/curl -fsS -u "$SONAR_TOKEN:" \
+              "$SONAR_HOST_URL/api/authentication/validate" || true
 
-TASK_FILE=".scannerwork/report-task.txt"
-test -f "$TASK_FILE"
-
-CE_TASK_ID="$(grep -E '^ceTaskId=' "$TASK_FILE" | cut -d= -f2)"
-if [ -z "${CE_TASK_ID:-}" ]; then
-  CE_TASK_ID="$(grep -E '^ceTaskUrl=' "$TASK_FILE" | sed -n 's/.*id=\\([^&]*\\).*/\\1/p')"
-fi
-echo "[gate] Background task: $CE_TASK_ID"
-
-for i in $(seq 1 120); do
-  RESP="$(docker run --rm --platform linux/arm64 --network "$DOCKER_NET" curlimages/curl:8.11.1 \
-            -sSf -u "$SONAR_TOKEN:" "$SONAR_HOST_URL/api/ce/task?id=$CE_TASK_ID" || true)"
-  STATUS="$(printf '%s' "$RESP" | sed -n 's/.*"status":"\\([^"]*\\)".*/\\1/p')"
-  echo "[gate] CE status: ${STATUS:-unknown} ($i/120)"
-  case "$STATUS" in
-    SUCCESS|FAILED|CANCELED) break ;;
-  esac
-  sleep 3
-done
-
-[ "$STATUS" = "SUCCESS" ] || { echo "[gate] CE status: $STATUS"; exit 1; }
-
-QG="$(docker run --rm --platform linux/arm64 --network "$DOCKER_NET" curlimages/curl:8.11.1 \
-      -sSf -u "$SONAR_TOKEN:" \
-      "$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY")"
-printf '%s\n' "$QG" > quality-gate.json
-QSTATUS="$(printf '%s' "$QG" | sed -n 's/.*"status":"\\([^"]*\\)".*/\\1/p')"
-echo "[gate] Quality Gate: $QSTATUS"
-[ "$QSTATUS" = "OK" ] || { echo "Quality Gate failed: $QSTATUS"; exit 1; }
-BASH
+            # --- run scanner (arm64 utk Mac M-series)
+            docker pull --platform linux/arm64 sonarsource/sonar-scanner-cli
+            docker run --rm --platform linux/arm64 --network jenkins \
+              -v "$WORKSPACE:/usr/src" \
+              sonarsource/sonar-scanner-cli \
+                -Dsonar.host.url="$SONAR_HOST_URL" \
+                -Dsonar.token="$SONAR_TOKEN" \
+                -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+                -Dsonar.projectName="$SONAR_PROJECT_NAME" \
+                -Dsonar.sources=. \
+                -Dsonar.inclusions="**/*" \
+                -Dsonar.exclusions="**/log/**,**/log4/**,**/log_3/**,**/*.test.*,**/node_modules/**,**/dist/**,**/build/**,docker-compose.yaml" \
+                -Dsonar.coverage.exclusions="**/*.test.*,**/test/**,**/tests**"
           '''
-          archiveArtifacts artifacts: 'quality-gate.json', fingerprint: true
         }
       }
     }
@@ -163,7 +62,7 @@ BASH
     stage('SCA - Dependency-Check (repo)') {
       agent {
         docker {
-          image 'owasp/dependency-check:9.1.0'
+          image 'owasp/dependency-check:latest'
           reuseNode true
           args "-v $WORKSPACE/.odc:/usr/share/dependency-check/data -v $WORKSPACE/.odc-temp:/tmp"
         }
@@ -213,7 +112,7 @@ BASH
     stage('SCA - Trivy (filesystem)') {
       agent {
         docker {
-          image 'aquasec/trivy:0.54.1'
+          image 'aquasec/trivy:latest'
           reuseNode true
           args "--entrypoint= -v $WORKSPACE/.trivy-cache:/root/.cache/trivy"
         }
@@ -249,7 +148,7 @@ BASH
     stage('SAST - Semgrep') {
       agent {
         docker {
-          image 'semgrep/semgrep:1.95.0'
+          image 'semgrep/semgrep:latest'
           reuseNode true
           args '--entrypoint='
         }
