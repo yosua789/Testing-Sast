@@ -29,36 +29,40 @@ pipeline {
 
     // === SAST: SonarQube (scan source code) ===
     stage('SAST - SonarQube') {
-      steps {
-        withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
-          sh '''
-            set -eux
+  steps {
+    withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
+      sh '''
+        set -eux
 
-            echo "[PRECHECK] Host: $SONAR_HOST_URL"
-            echo "[PRECHECK] Project key: $SONAR_PROJECT_KEY"
-            echo -n "$SONAR_TOKEN" | wc -c | awk '{print "[PRECHECK] token length:",$0}'
+        # 0) Sanity check: token panjangnya berapa (hindari token kosong / newline)
+        echo -n "$(printf %s "$SONAR_TOKEN")" | wc -c | awk '{print "TOKEN_LENGTH="$0}'
 
-            # Sanity check token & konektivitas dari dalam job
-            docker run --rm --network jenkins curlimages/curl -fsS -u "$(printf %s "$SONAR_TOKEN"):" \
-              "$SONAR_HOST_URL/api/authentication/validate"; echo
+        # 1) Cek konektivitas + autentikasi ke endpoint yg dipakai scanner
+        docker run --rm --network jenkins curlimages/curl -fsS -u "$(printf %s "$SONAR_TOKEN"):" \
+          "$SONAR_HOST_URL/api/v2/analysis/version" | sed 's/.*/[OK] analysis.version reachable/'
 
-            # Jalankan scanner (tanpa --platform)
-            docker pull sonarsource/sonar-scanner-cli
-            docker run --rm --network jenkins \
-              -v "$WORKSPACE:/usr/src" \
-              sonarsource/sonar-scanner-cli \
-                -Dsonar.host.url="$SONAR_HOST_URL" \
-                -Dsonar.token="$(printf %s "$SONAR_TOKEN")" \
-                -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
-                -Dsonar.projectName="$SONAR_PROJECT_NAME" \
-                -Dsonar.sources=. \
-                -Dsonar.inclusions="**/*" \
-                -Dsonar.exclusions="**/log/**,**/log4/**,**/log_3/**,**/*.test.*,**/node_modules/**,**/dist/**,**/build/**,docker-compose.yaml" \
-                -Dsonar.coverage.exclusions="**/*.test.*,**/test/**,**/tests**"
-          '''
-        }
-      }
+        # 2) Jalankan scanner.
+        #    - TIDAK pakai --platform (biarin warning amd64 vs arm64)
+        #    - Pass token via ENV SONAR_TOKEN juga (selain -Dsonar.token) supaya pasti kebaca.
+        docker pull sonarsource/sonar-scanner-cli
+
+        docker run --rm --network jenkins \
+          -e SONAR_TOKEN="$(printf %s "$SONAR_TOKEN")" \
+          -e SONAR_HOST_URL="$SONAR_HOST_URL" \
+          -v "$WORKSPACE:/usr/src" \
+          sonarsource/sonar-scanner-cli \
+            -Dsonar.host.url="$SONAR_HOST_URL" \
+            -Dsonar.token="$(printf %s "$SONAR_TOKEN")" \
+            -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+            -Dsonar.projectName="$SONAR_PROJECT_NAME" \
+            -Dsonar.sources=. \
+            -Dsonar.inclusions="**/*" \
+            -Dsonar.exclusions="**/log/**,**/log4/**,**/log_3/**,**/*.test.*,**/node_modules/**,**/dist/**,**/build/**,docker-compose.yaml" \
+            -Dsonar.coverage.exclusions="**/*.test.*,**/test/**,**/tests**"
+      '''
     }
+  }
+}
 
     // === SCA: OWASP Dependency-Check ===
     stage('SCA - Dependency-Check (repo)') {
