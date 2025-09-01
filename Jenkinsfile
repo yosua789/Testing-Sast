@@ -3,21 +3,15 @@ pipeline {
   options { skipDefaultCheckout(true) }
 
   environment {
-    // infra
-    DOCKER_NET             = 'jenkins'
-    JENKINS_CONTAINER_NAME = 'jenkins'
+    FAIL_ON_ISSUES     = 'false'
 
     // SonarQube
     SONAR_HOST_URL     = 'http://sonarqube:9000'
     SONAR_PROJECT_KEY  = 'coba'
     SONAR_PROJECT_NAME = 'coba'
-
-    // policy
-    FAIL_ON_ISSUES     = 'false'
   }
 
   stages {
-
     stage('Clean Workspace') {
       steps { cleanWs() }
     }
@@ -33,33 +27,34 @@ pipeline {
       }
     }
 
+    // === SAST: SonarQube (pakai container SonarScanner ephemeral) ===
     stage('SAST - SonarQube') {
       steps {
-        withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
+        withCredentials([string(credentialsId: 'sonarqube-token', variable: 'T')]) {
           sh '''
             set -eux
 
-            # Tentukan cara auth:
-            # - sqp_*  => Basic token (sonar.token)
-            # - squ_*  => Bearer token (Authorization header)
-            EXTRA_AUTH=""
-            if echo "$SONAR_TOKEN" | grep -q '^squ_'; then
-              # per RFC, spasi di property harus di-escape %20
-              EXTRA_AUTH="-Dsonar.http.headers=Authorization=Bearer%20$SONAR_TOKEN"
+            # NOTE:
+            # - Token "squ_..." (User token) WAJIB via ENV SONAR_TOKEN (header Basic)
+            # - Token "sqp_..." (Project analysis token) bisa via -Dsonar.token
+            AUTH_ENV=""; AUTH_PROP=""
+            if echo "$T" | grep -q '^squ_'; then
+              AUTH_ENV="-e SONAR_TOKEN=$T"
             else
-              EXTRA_AUTH="-Dsonar.token=$SONAR_TOKEN"
+              AUTH_PROP="-Dsonar.token=$T"
             fi
 
             docker pull sonarsource/sonar-scanner-cli
 
-            docker run --rm \
-              --network "$DOCKER_NET" \
-              --volumes-from "$JENKINS_CONTAINER_NAME" \
+            # Pakai workspace & .git dari container Jenkins (nama container: jenkins)
+            docker run --rm --network jenkins \
+              --volumes-from jenkins \
               -w "$WORKSPACE" \
               -e SONAR_HOST_URL="$SONAR_HOST_URL" \
+              $AUTH_ENV \
               sonarsource/sonar-scanner-cli \
                 -Dsonar.host.url="$SONAR_HOST_URL" \
-                $EXTRA_AUTH \
+                $AUTH_PROP \
                 -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
                 -Dsonar.projectName="$SONAR_PROJECT_NAME" \
                 -Dsonar.scm.provider=git \
@@ -72,23 +67,23 @@ pipeline {
       }
     }
 
+    // === SCA: OWASP Dependency-Check (repo) ===
     stage('SCA - Dependency-Check (repo)') {
       agent {
         docker {
           image 'owasp/dependency-check:latest'
           reuseNode true
-          // kosongkan entrypoint; plugin Jenkins otomatis tambahkan --volumes-from <jenkins-cid>
-          args "--entrypoint='' -v $WORKSPACE/.odc:/usr/share/dependency-check/data -v $WORKSPACE/.odc-temp:/tmp"
+          // WAJIB: kosongkan entrypoint supaya Jenkins bisa menjalankan command yang kita kasih
+          args "--entrypoint=''"
         }
       }
       steps {
         catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
           script {
             sh '''
-              set -eu
+              set -eux
               mkdir -p dependency-check-report
-
-              # update DB (toleransi error jaringan)
+              # Update DB (kalau lama/timeout, biarin lanjut)
               /usr/share/dependency-check/bin/dependency-check.sh --updateonly || true
 
               set +e
@@ -112,7 +107,7 @@ pipeline {
       post {
         always {
           script {
-            if (fileExists('dependency-check-report/dependency-check.log')) {
+            if (fileExists('dependency-check-report')) {
               archiveArtifacts artifacts: 'dependency-check-report/**', fingerprint: false, onlyIfSuccessful: false
             } else {
               echo "Dependency-Check report not found"
@@ -122,12 +117,13 @@ pipeline {
       }
     }
 
+    // === SCA: Trivy (filesystem) ===
     stage('SCA - Trivy (filesystem)') {
       agent {
         docker {
           image 'aquasec/trivy:latest'
           reuseNode true
-          // fix izin cache: taruh di /tmp, map ke workspace agar persist
+          // FIX permission cache: arahkan cache ke /tmp & mount ke workspace
           args "--entrypoint='' -e HOME=/tmp -e XDG_CACHE_HOME=/tmp/trivy-cache -v $WORKSPACE/.trivy-cache:/tmp/trivy-cache"
         }
       }
@@ -153,13 +149,14 @@ pipeline {
       post {
         always {
           script {
-            if (fileExists('trivy-fs.txt'))   { archiveArtifacts artifacts: 'trivy-fs.txt',  fingerprint: false }
+            if (fileExists('trivy-fs.txt'))   { archiveArtifacts artifacts: 'trivy-fs.txt',   fingerprint: false }
             if (fileExists('trivy-fs.sarif')) { archiveArtifacts artifacts: 'trivy-fs.sarif', fingerprint: false }
           }
         }
       }
     }
 
+    // === SAST: Semgrep ===
     stage('SAST - Semgrep') {
       agent {
         docker {
@@ -203,7 +200,7 @@ pipeline {
         always {
           script {
             if (fileExists('semgrep.sarif'))      { archiveArtifacts artifacts: 'semgrep.sarif', fingerprint: false }
-            if (fileExists('semgrep-junit.xml'))  {
+            if (fileExists('semgrep-junit.xml')) {
               archiveArtifacts artifacts: 'semgrep-junit.xml', fingerprint: false
               junit allowEmptyResults: false, testResults: 'semgrep-junit.xml'
             } else {
