@@ -23,7 +23,7 @@ pipeline {
           extensions: [[$class: 'CloneOption', shallow: false, noTags: false]],
           userRemoteConfigs: [[url: 'https://github.com/yosua789/Testing-Sast.git']]
         ])
-        sh 'echo "WS: $WORKSPACE" && ls -la'
+        sh 'echo "WS: $WORKSPACE" && ls -la && ls -la .git || true'
       }
     }
 
@@ -33,21 +33,27 @@ pipeline {
         withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
           sh '''
             set -eux
-            docker pull sonarsource/sonar-scanner-cli
+            JENKINS_CID=$(hostname)   # id container jenkins saat ini
 
-            # Mount workspace ke path yg sama di dalam container + set working dir
+            # (sanity) pastikan .git kebaca dari container turunan
+            docker run --rm --network jenkins --volumes-from "$JENKINS_CID" -w "$WORKSPACE" \
+              alpine/git git rev-parse --is-inside-work-tree
+
+            docker pull sonarsource/sonar-scanner-cli:latest
+
+            # NOTE: jika host-mu Apple Silicon & error platform, tambahkan: --platform linux/amd64
             docker run --rm --network jenkins \
-              -v "$WORKSPACE:$WORKSPACE" \
+              --volumes-from "$JENKINS_CID" \
               -w "$WORKSPACE" \
               -e SONAR_HOST_URL="$SONAR_HOST_URL" \
               -e SONAR_TOKEN="$SONAR_TOKEN" \
-              sonarsource/sonar-scanner-cli \
+              sonarsource/sonar-scanner-cli:latest \
                 -Dsonar.host.url="$SONAR_HOST_URL" \
                 -Dsonar.token="$SONAR_TOKEN" \
                 -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
                 -Dsonar.projectName="$SONAR_PROJECT_NAME" \
-                -Dsonar.sources=. \
                 -Dsonar.scm.provider=git \
+                -Dsonar.sources=. \
                 -Dsonar.inclusions="**/*" \
                 -Dsonar.exclusions="**/log/**,**/log4/**,**/log_3/**,**/*.test.*,**/node_modules/**,**/dist/**,**/build/**,docker-compose.yaml" \
                 -Dsonar.coverage.exclusions="**/*.test.*,**/test/**,**/tests**"
@@ -62,8 +68,8 @@ pipeline {
         docker {
           image 'owasp/dependency-check:latest'
           reuseNode true
-          // kosongkan entrypoint supaya Jenkins bisa jalankan perintah kita
-          args "--entrypoint='' -v $WORKSPACE/.odc:/usr/share/dependency-check/data -v $WORKSPACE/.odc-temp:/tmp"
+          // WAJIB: kosongkan entrypoint supaya Jenkins bisa "exec" ke container
+          args "--entrypoint=''"
         }
       }
       steps {
@@ -72,8 +78,8 @@ pipeline {
             sh '''
               set -eu
               mkdir -p dependency-check-report
-              /usr/share/dependency-check/bin/dependency-check.sh --updateonly || true
 
+              # Langsung scan saja (biar nggak kena isu heartbeat saat --updateonly)
               set +e
               /usr/share/dependency-check/bin/dependency-check.sh \
                 --project "Testing-Sast" \
@@ -111,7 +117,7 @@ pipeline {
         docker {
           image 'aquasec/trivy:latest'
           reuseNode true
-          // FIX: cache permission (pakai /tmp di container & mount ke workspace)
+          // FIX: pakai cache di /tmp agar tidak nulis ke /.cache (permission denied)
           args "--entrypoint='' -e HOME=/tmp -e XDG_CACHE_HOME=/tmp/trivy-cache -v $WORKSPACE/.trivy-cache:/tmp/trivy-cache"
         }
       }
@@ -137,7 +143,7 @@ pipeline {
       post {
         always {
           script {
-            if (fileExists('trivy-fs.txt'))   { archiveArtifacts artifacts: 'trivy-fs.txt',  fingerprint: false }
+            if (fileExists('trivy-fs.txt'))   { archiveArtifacts artifacts: 'trivy-fs.txt',   fingerprint: false }
             if (fileExists('trivy-fs.sarif')) { archiveArtifacts artifacts: 'trivy-fs.sarif', fingerprint: false }
           }
         }
@@ -187,7 +193,7 @@ pipeline {
       post {
         always {
           script {
-            if (fileExists('semgrep.sarif'))      { archiveArtifacts artifacts: 'semgrep.sarif',    fingerprint: false }
+            if (fileExists('semgrep.sarif'))      { archiveArtifacts artifacts: 'semgrep.sarif',      fingerprint: false }
             if (fileExists('semgrep-junit.xml')) {
               archiveArtifacts artifacts: 'semgrep-junit.xml', fingerprint: false
               junit allowEmptyResults: false, testResults: 'semgrep-junit.xml'
