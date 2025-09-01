@@ -28,22 +28,28 @@ pipeline {
     }
 
     // === SAST: SonarQube ===
+    // IMPORTANT: gunakan volumes-from + -w supaya scanner lihat workspace yg sama dgn Jenkins
     stage('SAST - SonarQube') {
       steps {
         withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
           sh '''
             set -eux
+            CID=$(basename "$(cat /proc/1/cpuset)")   # container id Jenkins
+
             docker pull sonarsource/sonar-scanner-cli
+
             docker run --rm --network jenkins \
+              --volumes-from "$CID" \
+              -w "$WORKSPACE" \
               -e SONAR_HOST_URL="$SONAR_HOST_URL" \
               -e SONAR_TOKEN="$SONAR_TOKEN" \
-              -v "$WORKSPACE:/usr/src" \
               sonarsource/sonar-scanner-cli \
                 -Dsonar.host.url="$SONAR_HOST_URL" \
                 -Dsonar.token="$SONAR_TOKEN" \
                 -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
                 -Dsonar.projectName="$SONAR_PROJECT_NAME" \
                 -Dsonar.sources=. \
+                -Dsonar.scm.provider=git \
                 -Dsonar.inclusions="**/*" \
                 -Dsonar.exclusions="**/log/**,**/log4/**,**/log_3/**,**/*.test.*,**/node_modules/**,**/dist/**,**/build/**,docker-compose.yaml" \
                 -Dsonar.coverage.exclusions="**/*.test.*,**/test/**,**/tests**"
@@ -58,7 +64,6 @@ pipeline {
         docker {
           image 'owasp/dependency-check:latest'
           reuseNode true
-          // WAJIB: kosongkan entrypoint supaya Jenkins bisa menjalankan `cat`
           args "--entrypoint='' -v $WORKSPACE/.odc:/usr/share/dependency-check/data -v $WORKSPACE/.odc-temp:/tmp"
         }
       }
@@ -91,7 +96,7 @@ pipeline {
       post {
         always {
           script {
-            if (fileExists('dependency-check-report/dependency-check.log')) {
+            if (fileExists('dependency-check-report')) {
               archiveArtifacts artifacts: 'dependency-check-report/**', fingerprint: false, onlyIfSuccessful: false
             } else {
               echo "Dependency-Check report not found"
@@ -107,7 +112,6 @@ pipeline {
         docker {
           image 'aquasec/trivy:latest'
           reuseNode true
-          // FIX: cache permission (user 1000). Pakai cache di /tmp & mount ke workspace
           args "--entrypoint='' -e HOME=/tmp -e XDG_CACHE_HOME=/tmp/trivy-cache -v $WORKSPACE/.trivy-cache:/tmp/trivy-cache"
         }
       }
