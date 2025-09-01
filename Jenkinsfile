@@ -28,18 +28,16 @@ pipeline {
     }
 
     // === SAST: SonarQube ===
-    // IMPORTANT: gunakan volumes-from + -w supaya scanner lihat workspace yg sama dgn Jenkins
     stage('SAST - SonarQube') {
       steps {
         withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
           sh '''
             set -eux
-            CID=$(basename "$(cat /proc/1/cpuset)")   # container id Jenkins
-
             docker pull sonarsource/sonar-scanner-cli
 
+            # Mount workspace ke path yg sama di dalam container + set working dir
             docker run --rm --network jenkins \
-              --volumes-from "$CID" \
+              -v "$WORKSPACE:$WORKSPACE" \
               -w "$WORKSPACE" \
               -e SONAR_HOST_URL="$SONAR_HOST_URL" \
               -e SONAR_TOKEN="$SONAR_TOKEN" \
@@ -64,6 +62,7 @@ pipeline {
         docker {
           image 'owasp/dependency-check:latest'
           reuseNode true
+          // kosongkan entrypoint supaya Jenkins bisa jalankan perintah kita
           args "--entrypoint='' -v $WORKSPACE/.odc:/usr/share/dependency-check/data -v $WORKSPACE/.odc-temp:/tmp"
         }
       }
@@ -112,6 +111,7 @@ pipeline {
         docker {
           image 'aquasec/trivy:latest'
           reuseNode true
+          // FIX: cache permission (pakai /tmp di container & mount ke workspace)
           args "--entrypoint='' -e HOME=/tmp -e XDG_CACHE_HOME=/tmp/trivy-cache -v $WORKSPACE/.trivy-cache:/tmp/trivy-cache"
         }
       }
@@ -187,7 +187,7 @@ pipeline {
       post {
         always {
           script {
-            if (fileExists('semgrep.sarif'))  { archiveArtifacts artifacts: 'semgrep.sarif',    fingerprint: false }
+            if (fileExists('semgrep.sarif'))      { archiveArtifacts artifacts: 'semgrep.sarif',    fingerprint: false }
             if (fileExists('semgrep-junit.xml')) {
               archiveArtifacts artifacts: 'semgrep-junit.xml', fingerprint: false
               junit allowEmptyResults: false, testResults: 'semgrep-junit.xml'
