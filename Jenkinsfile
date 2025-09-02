@@ -12,9 +12,7 @@ pipeline {
   }
 
   stages {
-    stage('Clean Workspace') {
-      steps { cleanWs() }
-    }
+    stage('Clean Workspace') { steps { cleanWs() } }
 
     stage('Checkout') {
       steps {
@@ -29,19 +27,16 @@ pipeline {
 
     stage('Build (bootstrap Maven if needed)') {
       steps {
-        // Do not fail the whole pipeline if build hiccups; we’ll handle in Sonar stage.
+        // Don’t fail the pipeline here; gating is handled downstream.
         catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
           sh '''
             set -eux
 
             HAS_MVN=false
-            if [ -f pom.xml ]; then
-              HAS_MVN=true
-            fi
+            [ -f pom.xml ] && HAS_MVN=true
 
-            # If no Maven/Gradle, bootstrap a minimal Maven project to compile with required deps.
+            # If no Maven/Gradle, create a minimal pom.xml to satisfy deps & compile.
             if ! $HAS_MVN && [ ! -f build.gradle ] && [ ! -f gradlew ]; then
-              echo "No Maven/Gradle detected. Bootstrapping temporary pom.xml ..."
               cat > pom.xml <<'POM'
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -56,26 +51,22 @@ pipeline {
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
   <dependencies>
-    <!-- javax.servlet.* used throughout -->
     <dependency>
       <groupId>javax.servlet</groupId>
       <artifactId>javax.servlet-api</artifactId>
       <version>4.0.1</version>
       <scope>provided</scope>
     </dependency>
-    <!-- logging -->
     <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-api</artifactId>
       <version>1.7.36</version>
     </dependency>
-    <!-- OWASP ESAPI -->
     <dependency>
       <groupId>org.owasp.esapi</groupId>
       <artifactId>esapi</artifactId>
       <version>2.5.0.0</version>
     </dependency>
-    <!-- javassist (referenced in OOME servlet) -->
     <dependency>
       <groupId>org.javassist</groupId>
       <artifactId>javassist</artifactId>
@@ -91,7 +82,6 @@ pipeline {
         <configuration>
           <release>8</release>
           <compilerArgs>
-            <!-- Suppress proprietary API warnings from sun.misc.Unsafe usage -->
             <arg>-Xlint:-options,-deprecation</arg>
           </compilerArgs>
         </configuration>
@@ -102,9 +92,8 @@ pipeline {
 POM
             fi
 
-            # Prefer Maven if available or just bootstrapped
             if [ -f pom.xml ]; then
-              echo "Building with Maven (Temurin 17 JDK)"
+              echo "Building with Maven"
               docker run --rm --network jenkins \
                 --volumes-from jenkins -w "$WORKSPACE" \
                 maven:3-eclipse-temurin-17 \
@@ -116,8 +105,7 @@ POM
                 gradle:8.10.2-jdk17 \
                 bash -lc './gradlew clean build || gradle clean build'
             else
-              # LAST RESORT (should not hit if pom was bootstrapped)
-              echo "Fallback: plain javac (no deps) - likely to fail"
+              echo "Fallback: plain javac"
               mkdir -p target/classes target/test-classes
               docker run --rm --network jenkins \
                 --volumes-from jenkins -w "$WORKSPACE" \
@@ -126,7 +114,7 @@ POM
                           if [ -s .java-list ]; then javac -d target/classes @.java-list; else echo "No Java sources found"; fi'
             fi
 
-            echo "Show a few compiled classes (if any):"
+            echo "Sample compiled classes:"
             find target -name "*.class" | head -n 20 || true
           '''
         }
@@ -136,33 +124,22 @@ POM
     stage('SAST - SonarQube') {
       steps {
         withCredentials([string(credentialsId: 'sonarqube-token', variable: 'T')]) {
-          // Non-blocking: record exit code but continue pipeline
           catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
             sh '''
               set -eux
-
               AUTH_ENV=""; AUTH_PROP=""
-              if echo "$T" | grep -q '^squ_'; then
-                AUTH_ENV="-e SONAR_TOKEN=$T"
-              else
-                AUTH_PROP="-Dsonar.token=$T"
-              fi
+              if echo "$T" | grep -q '^squ_'; then AUTH_ENV="-e SONAR_TOKEN=$T"; else AUTH_PROP="-Dsonar.token=$T"; fi
 
               docker pull sonarsource/sonar-scanner-cli
 
-              # Build sonar flags based on what we compiled
               EXTRA_JAVA_FLAGS=""
-              if [ -d target/classes ]; then
-                EXTRA_JAVA_FLAGS="${EXTRA_JAVA_FLAGS} -Dsonar.java.binaries=target/classes"
-              fi
-              if [ -d target/test-classes ]; then
-                EXTRA_JAVA_FLAGS="${EXTRA_JAVA_FLAGS} -Dsonar.java.test.binaries=target/test-classes"
-              fi
+              [ -d target/classes ] && EXTRA_JAVA_FLAGS="$EXTRA_JAVA_FLAGS -Dsonar.java.binaries=target/classes"
+              [ -d target/test-classes ] && EXTRA_JAVA_FLAGS="$EXTRA_JAVA_FLAGS -Dsonar.java.test.binaries=target/test-classes"
 
-              # If there are Java sources but no classes, exclude Java to avoid hard fail
+              # If Java sources exist but no classes, exclude Java to avoid hard fail
               if find src -name "*.java" | grep -q . && [ ! -d target/classes ]; then
-                echo "WARNING: Java sources found but no compiled classes; excluding Java from SonarJava."
-                EXTRA_JAVA_FLAGS="${EXTRA_JAVA_FLAGS} -Dsonar.exclusions=**/*.java"
+                echo "WARNING: Java sources found but no compiled classes; excluding **/*.java for this run."
+                EXTRA_JAVA_FLAGS="$EXTRA_JAVA_FLAGS -Dsonar.exclusions=**/*.java"
               fi
 
               set +e
@@ -200,11 +177,7 @@ POM
 
     stage('SCA - Dependency-Check (repo)') {
       agent {
-        docker {
-          image 'owasp/dependency-check:latest'
-          reuseNode true
-          args "--entrypoint=''"
-        }
+        docker { image 'owasp/dependency-check:latest'; reuseNode true; args "--entrypoint=''" }
       }
       steps {
         catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
@@ -284,52 +257,51 @@ POM
 
     stage('SAST - Semgrep') {
       agent {
-        docker {
-          image 'semgrep/semgrep:latest'
-          reuseNode true
-          args "--entrypoint=''"
-        }
+        docker { image 'semgrep/semgrep:latest'; reuseNode true; args "--entrypoint=''" }
       }
       steps {
         catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
           script {
             sh '''
               set +e
-              semgrep --version || true
-
-              # SARIF
+              # SARIF (for archiving)
               semgrep scan \
                 --config p/ci --config p/owasp-top-ten --config p/docker \
                 --exclude 'log/**' --exclude '**/node_modules/**' --exclude '**/dist/**' --exclude '**/build/**' \
                 --severity ERROR --error \
                 --sarif --output semgrep.sarif .
+              rc1=$?
 
-              # JUnit
+              # JUnit (for Jenkins test view)
               semgrep scan \
                 --config p/ci --config p/owasp-top-ten --config p/docker \
                 --exclude 'log/**' --exclude '**/node_modules/**' --exclude '**/dist/**' --exclude '**/build/**' \
                 --severity ERROR --error \
                 --junit-xml --output semgrep-junit.xml .
+              rc2=$?
 
-              echo $? > .semgrep_exit
+              [ $rc1 -ne 0 ] || [ $rc2 -ne 0 ]; echo $? > .semgrep_exit
             '''
             def ec = readFile('.semgrep_exit').trim()
             if (env.FAIL_ON_ISSUES == 'true' && ec != '0') {
               error "Fail build (policy) Semgrep exit ${ec}"
             }
-            sh 'ls -lh semgrep.* || true'
           }
         }
       }
       post {
         always {
           script {
-            if (fileExists('semgrep.sarif'))      { archiveArtifacts artifacts: 'semgrep.sarif', fingerprint: false }
+            if (fileExists('semgrep.sarif'))      archiveArtifacts artifacts: 'semgrep.sarif', fingerprint: false
             if (fileExists('semgrep-junit.xml')) {
-              archiveArtifacts artifacts: 'semgrep-junit.xml', fingerprint: false
-              junit allowEmptyResults: false, testResults: 'semgrep-junit.xml'
-            } else {
-              echo "semgrep-junit.xml not found"
+              junit testResults: 'semgrep-junit.xml',
+                    allowEmptyResults: true,
+                    skipPublishingChecks: true,
+                    skipMarkingBuildUnstable: true
+            }
+            // Ensure overall SUCCESS when not gating on issues
+            if (env.FAIL_ON_ISSUES != 'true' && currentBuild.result == 'UNSTABLE') {
+              currentBuild.result = 'SUCCESS'
             }
           }
         }
