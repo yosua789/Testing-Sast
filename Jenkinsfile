@@ -7,8 +7,8 @@ pipeline {
 
     // SonarQube
     SONAR_HOST_URL     = 'http://sonarqube:9000'
-    SONAR_PROJECT_KEY  = 'coba'
-    SONAR_PROJECT_NAME = 'coba'
+    SONAR_PROJECT_KEY  = 'central dashboard monitoring'
+    SONAR_PROJECT_NAME = 'central dashboard monitoring'
   }
 
   stages {
@@ -30,7 +30,6 @@ pipeline {
     // === Build (compile Java so SonarJava can analyze bytecode) ===
     stage('Build') {
       steps {
-        // Keep pipeline going even if build hiccups; Sonar stage will adapt.
         catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
           sh '''
             set -eux
@@ -95,7 +94,6 @@ POM
     // === SAST: SonarQube (pakai container SonarScanner ephemeral) ===
     stage('SAST - SonarQube') {
       steps {
-        // Non-blocking: let later stages run even if Sonar fails
         catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
           withCredentials([string(credentialsId: 'sonarqube-token', variable: 'T')]) {
             sh '''
@@ -159,7 +157,6 @@ POM
         docker {
           image 'owasp/dependency-check:latest'
           reuseNode true
-          // WAJIB: kosongkan entrypoint supaya Jenkins bisa menjalankan command yang kita kasih
           args "--entrypoint=''"
         }
       }
@@ -209,7 +206,6 @@ POM
         docker {
           image 'aquasec/trivy:latest'
           reuseNode true
-          // FIX permission cache: arahkan cache ke /tmp & mount ke workspace
           args "--entrypoint='' -e HOME=/tmp -e XDG_CACHE_HOME=/tmp/trivy-cache -v $WORKSPACE/.trivy-cache:/tmp/trivy-cache"
         }
       }
@@ -288,7 +284,6 @@ POM
             if (fileExists('semgrep.sarif'))      { archiveArtifacts artifacts: 'semgrep.sarif', fingerprint: false }
             if (fileExists('semgrep-junit.xml')) {
               archiveArtifacts artifacts: 'semgrep-junit.xml', fingerprint: false
-              // Keep overall build SUCCESS even if there are failures in the JUnit report
               junit allowEmptyResults: true, testResults: 'semgrep-junit.xml', skipPublishingChecks: true, skipMarkingBuildUnstable: true
             } else {
               echo "semgrep-junit.xml not found"
