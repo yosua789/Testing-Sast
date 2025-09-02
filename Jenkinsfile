@@ -10,9 +10,7 @@ pipeline {
   }
 
   stages {
-    stage('Clean Workspace') {
-      steps { cleanWs() }
-    }
+    stage('Clean Workspace') { steps { cleanWs() } }
 
     stage('Checkout') {
       steps {
@@ -88,30 +86,37 @@ POM
           withCredentials([string(credentialsId: 'sonarqube-token', variable: 'T')]) {
             sh '''
               set -eux
-              AUTH_ENV=""; AUTH_PROP=""
-              if echo "$T" | grep -q '^squ_'; then AUTH_ENV="-e SONAR_TOKEN=$T"; else AUTH_PROP="-Dsonar.token=$T"; fi
+
+              docker run --rm --network jenkins curlimages/curl:8.8.0 -sS http://sonarqube:9000/api/system/status | tee .sq_status
+              grep -q '"status":"UP"' .sq_status
+              docker run --rm --network jenkins curlimages/curl:8.8.0 -sS -u "$T:" http://sonarqube:9000/api/authentication/validate | tee .sq_token
+              grep -q '"valid":true' .sq_token
+
               docker pull sonarsource/sonar-scanner-cli
+
               EXTRA_JAVA_FLAGS=""
               [ -d target/classes ] && EXTRA_JAVA_FLAGS="$EXTRA_JAVA_FLAGS -Dsonar.java.binaries=target/classes"
               [ -d target/test-classes ] && EXTRA_JAVA_FLAGS="$EXTRA_JAVA_FLAGS -Dsonar.java.test.binaries=target/test-classes"
               if find src -name "*.java" 2>/dev/null | grep -q . && [ ! -d target/classes ]; then
                 EXTRA_JAVA_FLAGS="$EXTRA_JAVA_FLAGS -Dsonar.exclusions=**/*.java"
               fi
+
               set +e
               docker run --rm --network jenkins \
                 --volumes-from jenkins \
                 -w "$WORKSPACE" \
                 -e SONAR_HOST_URL="$SONAR_HOST_URL" \
-                $AUTH_ENV \
                 sonarsource/sonar-scanner-cli \
+                  -X \
                   -Dsonar.host.url="$SONAR_HOST_URL" \
-                  $AUTH_PROP \
+                  -Dsonar.login="$T" \
+                  -Dsonar.ws.timeout=120 \
                   -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
                   -Dsonar.projectName="$SONAR_PROJECT_NAME" \
                   -Dsonar.scm.provider=git \
                   -Dsonar.sources=. \
                   -Dsonar.inclusions="**/*" \
-                  -Dsonar.exclusions="**/log/**,**/log4/**,**/log_3/**,**/*.test.*,**/node_modules/**,**/dist/**,**/build/**,docker-compose.yaml" \
+                  -Dsonar.exclusions="**/log/**,**/log4/**,**/log_3/**,**/*.test.*,**/node_modules/**,**/dist/**,**/build/**,**/target/**,docker-compose.yaml" \
                   -Dsonar.coverage.exclusions="**/*.test.*,**/test/**,**/tests**" \
                   ${EXTRA_JAVA_FLAGS}
               rc=$?
@@ -147,7 +152,7 @@ POM
               /usr/share/dependency-check/bin/dependency-check.sh --updateonly || true
               set +e
               /usr/share/dependency-check/bin/dependency-check.sh \
-                --project "Testing-Sast" \
+                --project "central-dashboard-monitoring" \
                 --scan . \
                 --format ALL \
                 --out dependency-check-report \
