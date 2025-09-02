@@ -4,10 +4,8 @@ pipeline {
 
   environment {
     FAIL_ON_ISSUES     = 'false'
-
-    // SonarQube
     SONAR_HOST_URL     = 'http://sonarqube:9000'
-    SONAR_PROJECT_KEY  = 'central dashboard monitoring'
+    SONAR_PROJECT_KEY  = 'central-dashboard-monitoring'
     SONAR_PROJECT_NAME = 'central dashboard monitoring'
   }
 
@@ -27,14 +25,11 @@ pipeline {
       }
     }
 
-    // === Build (compile Java so SonarJava can analyze bytecode) ===
     stage('Build') {
       steps {
         catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
           sh '''
             set -eux
-
-            # If no Maven/Gradle, create a tiny pom with required deps (servlet/slf4j/esapi/javassist)
             if [ ! -f pom.xml ] && [ ! -f build.gradle ] && [ ! -f gradlew ]; then
               cat > pom.xml <<'POM'
 <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -70,54 +65,38 @@ POM
             fi
 
             if [ -f pom.xml ]; then
-              echo "Building with Maven"
               docker run --rm --network jenkins --volumes-from jenkins -w "$WORKSPACE" \
                 maven:3-eclipse-temurin-17 mvn -B -DskipTests=true clean compile test-compile
             elif [ -f build.gradle ] || [ -f gradlew ]; then
-              echo "Building with Gradle"
               docker run --rm --network jenkins --volumes-from jenkins -w "$WORKSPACE" \
                 gradle:8.10.2-jdk17 bash -lc './gradlew clean build -x test || gradle clean build -x test'
             else
-              echo "Fallback: plain javac (best-effort)"
               mkdir -p target/classes target/test-classes
               docker run --rm --network jenkins --volumes-from jenkins -w "$WORKSPACE" \
                 eclipse-temurin:17-jdk bash -lc 'find src -type f -name "*.java" > .java-list || true; if [ -s .java-list ]; then javac -d target/classes @.java-list || true; fi'
             fi
 
-            echo "Sample compiled classes:"
             find target -name "*.class" | head -n 20 || true
           '''
         }
       }
     }
 
-    // === SAST: SonarQube (pakai container SonarScanner ephemeral) ===
     stage('SAST - SonarQube') {
       steps {
         catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
           withCredentials([string(credentialsId: 'sonarqube-token', variable: 'T')]) {
             sh '''
               set -eux
-
-              # Token handling:
-              # - "squ_..." user token via ENV SONAR_TOKEN
-              # - "sqp_..." project analysis token via -Dsonar.token
               AUTH_ENV=""; AUTH_PROP=""
               if echo "$T" | grep -q '^squ_'; then AUTH_ENV="-e SONAR_TOKEN=$T"; else AUTH_PROP="-Dsonar.token=$T"; fi
-
               docker pull sonarsource/sonar-scanner-cli
-
-              # Compute Java flags if we have bytecode
               EXTRA_JAVA_FLAGS=""
               [ -d target/classes ] && EXTRA_JAVA_FLAGS="$EXTRA_JAVA_FLAGS -Dsonar.java.binaries=target/classes"
               [ -d target/test-classes ] && EXTRA_JAVA_FLAGS="$EXTRA_JAVA_FLAGS -Dsonar.java.test.binaries=target/test-classes"
-
-              # If Java sources exist but no classes, exclude *.java to avoid analyzer crash
               if find src -name "*.java" 2>/dev/null | grep -q . && [ ! -d target/classes ]; then
-                echo "WARNING: Java sources present but no compiled classes; excluding **/*.java for this run."
                 EXTRA_JAVA_FLAGS="$EXTRA_JAVA_FLAGS -Dsonar.exclusions=**/*.java"
               fi
-
               set +e
               docker run --rm --network jenkins \
                 --volumes-from jenkins \
@@ -151,7 +130,6 @@ POM
       }
     }
 
-    // === SCA: OWASP Dependency-Check (repo) ===
     stage('SCA - Dependency-Check (repo)') {
       agent {
         docker {
@@ -166,9 +144,7 @@ POM
             sh '''
               set -eux
               mkdir -p dependency-check-report
-              # Update DB (kalau lama/timeout, biarin lanjut)
               /usr/share/dependency-check/bin/dependency-check.sh --updateonly || true
-
               set +e
               /usr/share/dependency-check/bin/dependency-check.sh \
                 --project "Testing-Sast" \
@@ -200,7 +176,6 @@ POM
       }
     }
 
-    // === SCA: Trivy (filesystem) ===
     stage('SCA - Trivy (filesystem)') {
       agent {
         docker {
@@ -238,7 +213,6 @@ POM
       }
     }
 
-    // === SAST: Semgrep ===
     stage('SAST - Semgrep') {
       agent {
         docker {
@@ -253,21 +227,16 @@ POM
             sh '''
               set +e
               semgrep --version || true
-
-              # SARIF
               semgrep scan \
                 --config p/ci --config p/owasp-top-ten --config p/docker \
                 --exclude 'log/**' --exclude '**/node_modules/**' --exclude '**/dist/**' --exclude '**/build/**' \
                 --severity ERROR --error \
                 --sarif --output semgrep.sarif .
-
-              # JUnit
               semgrep scan \
                 --config p/ci --config p/owasp-top-ten --config p/docker \
                 --exclude 'log/**' --exclude '**/node_modules/**' --exclude '**/dist/**' --exclude '**/build/**' \
                 --severity ERROR --error \
                 --junit-xml --output semgrep-junit.xml .
-
               echo $? > .semgrep_exit
             '''
             def ec = readFile('.semgrep_exit').trim()
